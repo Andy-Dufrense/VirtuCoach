@@ -1,0 +1,54 @@
+# --- OS / editor ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.sublime-*
+
+# --- secrets ---
+.env
+*.env
+!.env.example
+
+# --- project generated ---
+uploads/
+tmp/
+*.tmp
+logs/
+
+# --- AI / tool caches ---
+.code-review-graph/
+.claude/
+models/
+*.db
+*.sqlite3
+
+# --- Python ---
+*.egg-info/
+dist/
+build/
+*.spec
+.eggs/
+
+# --- Node (if frontend ever gets a build step) ---
+node_modules/
+
+# --- debug / temp ---
+backend/_img_cache.json
+backend/_qwen_angle_results.json
+backend/audit_*.txt
+backend/debug_*.txt
+backend/compare*.txt
+backend/final_*.txt
+backend/kb_search.txt
+backend/r*_summary.txt
+backend/ref_list.txt
+backend/test_*.json
+backend/test_*.txt
+backend/clean_test_result.json

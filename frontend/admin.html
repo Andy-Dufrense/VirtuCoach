@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>反馈管理 - VirtuCoach</title>
+<link rel="stylesheet" href="style.css">
+<style>
+/* Admin-specific overrides */
+.admin-container { max-width: 1000px; margin: 0 auto; padding: 20px; }
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.stat-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius); padding: 16px; text-align: center; }
+.stat-card .num { font-size: 28px; font-weight: 700; color: var(--primary-light); }
+.stat-card .label { font-size: 0.8rem; color: var(--text-dim); margin-top: 4px; }
+.filter-bar { display: flex; gap: 10px; flex-wrap: wrap; }
+.filter-bar select, .filter-bar input { padding: 8px 12px; border: 1px solid var(--card-border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 0.85rem; }
+.filter-bar input[type="search"] { flex: 1; min-width: 150px; }
+.feedback-item { border: 1px solid var(--card-border); border-radius: var(--radius); margin-bottom: 8px; background: var(--card-bg); }
+.feedback-header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; cursor: pointer; flex-wrap: wrap; }
+.feedback-header .expand-icon { font-size: 10px; transition: transform 0.2s; color: var(--text-dim); }
+.feedback-item.expanded .expand-icon { transform: rotate(90deg); }
+.project-tag { background: rgba(108,92,231,0.15); color: var(--primary-light); padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+.title-text { flex: 1; min-width: 200px; font-size: 0.875rem; }
+.meta { display: flex; gap: 8px; align-items: center; font-size: 0.8rem; color: var(--text-dim); }
+.badge { padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
+.badge-pending { background: rgba(253,203,110,0.15); color: var(--warning); }
+.badge-investigating { background: rgba(108,92,231,0.15); color: var(--primary-light); }
+.badge-resolved { background: rgba(0,184,148,0.15); color: var(--success); }
+.badge-wont_fix { background: rgba(136,136,170,0.15); color: var(--text-dim); }
+.badge-critical { background: rgba(225,112,85,0.15); color: var(--danger); }
+.badge-major { background: rgba(225,112,85,0.1); color: #fab1a0; }
+.badge-minor { background: rgba(253,203,110,0.1); color: #ffeaa7; }
+.badge-cosmetic { background: rgba(136,136,170,0.1); color: var(--text-dim); }
+.feedback-detail { display: none; padding: 0 16px 16px; border-top: 1px solid var(--card-border); }
+.feedback-item.expanded .feedback-detail { display: block; }
+.feedback-detail .field { margin-top: 12px; }
+.feedback-detail .field-label { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.feedback-detail img { max-width: 300px; max-height: 200px; border-radius: 6px; border: 1px solid var(--card-border); }
+.admin-actions { display: flex; gap: 8px; margin-top: 14px; align-items: center; flex-wrap: wrap; }
+.admin-actions select { padding: 6px 10px; border: 1px solid var(--card-border); border-radius: 6px; background: var(--bg); color: var(--text); }
+.admin-note-input { flex: 1; min-width: 150px; padding: 6px 10px; border: 1px solid var(--card-border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 0.85rem; }
+.pagination { display: flex; gap: 6px; justify-content: center; margin-top: 20px; }
+.gate { display: flex; justify-content: center; align-items: center; min-height: 60vh; }
+.btn-outline { background: transparent; border: 1px solid var(--card-border); color: var(--text); }
+.btn-sm { padding: 6px 12px; font-size: 0.8rem; }
+.empty { text-align: center; padding: 40px 20px; color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<div class="app">
+    <header class="header">
+        <div class="logo">VirtuCoach</div>
+        <div class="subtitle">反馈管理系统</div>
+    </header>
+
+    <!-- Password gate -->
+    <div id="passwordGate" class="gate">
+        <div style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:var(--radius);padding:28px;width:100%;max-width:400px;">
+            <h2 style="margin-bottom:20px;">管理员验证</h2>
+            <div style="margin-bottom:14px;">
+                <input type="password" id="adminPassword" placeholder="请输入管理密码" autofocus style="width:100%;padding:9px 12px;border:1px solid var(--card-border);border-radius:6px;background:var(--bg);color:var(--text);font-size:0.9rem;">
+            </div>
+            <button class="btn btn-primary" onclick="login()" style="width:100%">进入</button>
+            <p id="loginError" style="color:var(--danger);margin-top:8px;font-size:.875rem;display:none;">密码错误</p>
+        </div>
+    </div>
+
+    <!-- Dashboard (hidden until login) -->
+    <div id="dashboard" style="display:none;">
+        <div class="admin-container">
+            <div class="stats-grid" id="statsGrid"></div>
+
+            <div style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:var(--radius);padding:16px;margin-bottom:12px;">
+                <div class="filter-bar">
+                    <select id="filterProject" onchange="loadFeedbacks()">
+                        <option value="">全部项目</option>
+                        <option value="VirtuCoach">VirtuCoach</option>
+                        <option value="AI Music">AI Music</option>
+                        <option value="AI MV">AI MV</option>
+                    </select>
+                    <select id="filterStatus" onchange="loadFeedbacks()">
+                        <option value="">全部状态</option>
+                        <option value="pending">待处理</option>
+                        <option value="investigating">调查中</option>
+                        <option value="resolved">已解决</option>
+                        <option value="wont_fix">不修复</option>
+                    </select>
+                    <input type="search" id="filterSearch" placeholder="搜索关键词..." oninput="debounceSearch()">
+                    <button class="btn btn-outline btn-sm" onclick="loadFeedbacks()">刷新</button>
+                </div>
+            </div>
+
+            <div id="feedbackList"></div>
+            <div class="pagination" id="pagination"></div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+</div>
+
+<script>
+const API = '/api';
+let currentPage = 1;
+let searchTimer;
+
+function getToken() { return sessionStorage.getItem('fb_admin_token') || ''; }
+
+function toast(msg, type) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'toast toast-' + type + ' show';
+    setTimeout(() => { el.className = 'toast'; }, 3000);
+}
+
+function esc(s) {
+    if (!s) return '';
+    const div = document.createElement('div');
+    div.textContent = s;
+    return div.innerHTML;
+}
+
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && document.getElementById('passwordGate')?.style.display !== 'none') {
+        login();
+    }
+});
+
+function initAdminPage() {
+    const saved = sessionStorage.getItem('fb_admin_token');
+    if (saved) {
+        document.getElementById('passwordGate').style.display = 'none';
+        document.getElementById('dashboard').style.display = 'block';
+        loadStats();
+        loadFeedbacks();
+    }
+}
+
+async function login() {
+    const pw = document.getElementById('adminPassword').value;
+    if (!pw) return;
+    try {
+        const res = await fetch(API + '/verify-admin?token=' + encodeURIComponent(pw));
+        if (!res.ok) throw new Error('Invalid');
+        sessionStorage.setItem('fb_admin_token', pw);
+        document.getElementById('passwordGate').style.display = 'none';
+        document.getElementById('dashboard').style.display = 'block';
+        document.getElementById('loginError').style.display = 'none';
+        loadStats();
+        loadFeedbacks();
+    } catch (err) {
+        document.getElementById('loginError').style.display = 'block';
+    }
+}
+
+async function loadStats() {
+    try {
+        const res = await fetch(API + '/feedback-stats');
+        const s = await res.json();
+        document.getElementById('statsGrid').innerHTML = `
+            <div class="stat-card"><div class="num">${s.pending}</div><div class="label">待处理</div></div>
+            <div class="stat-card"><div class="num">${s.investigating}</div><div class="label">调查中</div></div>
+            <div class="stat-card"><div class="num">${s.resolved}</div><div class="label">已解决</div></div>
+            <div class="stat-card"><div class="num">${s.today}</div><div class="label">今日新增</div></div>
+            <div class="stat-card"><div class="num">${s.total}</div><div class="label">总计</div></div>
+        `;
+    } catch (err) { /* ignore */ }
+}
+
+async function loadFeedbacks(page) {
+    if (page) currentPage = page;
+    const project = document.getElementById('filterProject').value;
+    const status = document.getElementById('filterStatus').value;
+    const search = document.getElementById('filterSearch').value;
+
+    const params = new URLSearchParams({ page: currentPage, sort: 'newest' });
+    if (project) params.set('project', project);
+    if (status) params.set('status', status);
+    if (search) params.set('search', search);
+
+    try {
+        const res = await fetch(API + '/feedbacks?' + params.toString());
+        const data = await res.json();
+        renderList(data.items);
+        renderPagination(data.total, data.page, data.per_page);
+    } catch (err) {
+        document.getElementById('feedbackList').innerHTML = '<div class="empty"><p>加载失败</p></div>';
+    }
+}
+
+function renderList(items) {
+    const container = document.getElementById('feedbackList');
+    if (!items.length) {
+        container.innerHTML = '<div class="empty"><p>没有匹配的反馈</p></div>';
+        return;
+    }
+    container.innerHTML = items.map(f => `
+        <div class="feedback-item" id="fb-${f.id}">
+            <div class="feedback-header" onclick="toggleDetail(${f.id})">
+                <span class="expand-icon">▶</span>
+                <span class="project-tag">${esc(f.project)}</span>
+                <span class="badge badge-${f.severity}">${severityLabel(f.severity)}</span>
+                <span class="title-text">${esc(f.title)}</span>
+                <span class="meta">
+                    <span>${esc(f.tester_name) || '匿名'}</span>
+                    <span class="badge badge-${f.status}">${statusLabel(f.status)}</span>
+                    <span>${formatTime(f.created_at)}</span>
+                </span>
+            </div>
+            <div class="feedback-detail" id="detail-${f.id}">
+                <div class="field">
+                    <div class="field-label">分类</div>
+                    <div>${categoryLabel(f.category)}</div>
+                </div>
+                <div class="field">
+                    <div class="field-label">描述</div>
+                    <div style="white-space:pre-wrap">${esc(f.description)}</div>
+                </div>
+                ${f.steps_to_reproduce ? `
+                <div class="field">
+                    <div class="field-label">复现步骤</div>
+                    <div style="white-space:pre-wrap">${esc(f.steps_to_reproduce)}</div>
+                </div>` : ''}
+                ${f.screenshot ? `
+                <div class="field">
+                    <div class="field-label">截图</div>
+                    <a href="${API}/screenshots/${f.screenshot}" target="_blank">
+                        <img src="${API}/screenshots/${f.screenshot}" alt="截图" loading="lazy">
+                    </a>
+                </div>` : ''}
+                ${f.browser_info ? `
+                <div class="field">
+                    <div class="field-label">环境信息</div>
+                    <div style="font-size:.8rem;color:var(--text-dim)">${parseUA(f.browser_info)}</div>
+                </div>` : ''}
+                ${f.admin_note ? `
+                <div class="field">
+                    <div class="field-label">处理备注</div>
+                    <div style="white-space:pre-wrap;background:#fffbeb;padding:8px 12px;border-radius:4px;color:#333;">${esc(f.admin_note)}</div>
+                </div>` : ''}
+
+                <div class="admin-actions">
+                    ${f.status === 'pending' || f.status === 'investigating' ? `
+                    <button class="btn btn-primary btn-sm" onclick="quickResolve(${f.id})">✅ 处理完成</button>
+                    <button class="btn btn-outline btn-sm" onclick="quickReject(${f.id})">✗ 不修复</button>
+                    ` : `
+                    <button class="btn btn-outline btn-sm" onclick="quickReopen(${f.id})">重新打开</button>
+                    `}
+                    <input class="admin-note-input" id="noteInput-${f.id}" placeholder="备注（可选）" value="${esc(f.admin_note)}">
+                    <button class="btn btn-outline btn-sm" onclick="saveNote(${f.id})">仅保存备注</button>
+                    <select id="statusSelect-${f.id}" onchange="updateStatus(${f.id})" style="margin-left:auto;">
+                        <option value="pending" ${f.status==='pending'?'selected':''}>待处理</option>
+                        <option value="investigating" ${f.status==='investigating'?'selected':''}>调查中</option>
+                        <option value="resolved" ${f.status==='resolved'?'selected':''}>已解决</option>
+                        <option value="wont_fix" ${f.status==='wont_fix'?'selected':''}>不修复</option>
+                    </select>
+                    ${(f.status === 'resolved' || f.status === 'wont_fix') ? `<button class="btn btn-outline btn-sm" onclick="deleteFeedback(${f.id}, '${esc(f.title)}')" style="color:var(--danger);border-color:var(--danger);">删除</button>` : ''}
+                </div>
+            </div>
+        </div>
+    `).join('');
+}
+
+function toggleDetail(id) {
+    document.getElementById('fb-' + id).classList.toggle('expanded');
+}
+
+async function updateStatus(id) {
+    const sel = document.getElementById('statusSelect-' + id);
+    try {
+        const res = await fetch(API + '/feedbacks/' + id + '?admin_token=' + getToken(), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: sel.value }),
+        });
+        if (!res.ok) throw new Error('Failed');
+        toast('状态已更新', 'success');
+        loadStats();
+    } catch (err) {
+        toast('更新失败', 'error');
+    }
+}
+
+async function deleteFeedback(id, title) {
+    if (!confirm('确定要删除这条反馈吗？\n\n' + title + '\n\n此操作不可撤销。')) return;
+    try {
+        const res = await fetch(API + '/feedbacks/' + id + '?admin_token=' + getToken(), {
+            method: 'DELETE',
+        });
+        if (!res.ok) throw new Error('Failed');
+        toast('已删除', 'success');
+        loadStats();
+        loadFeedbacks(currentPage);
+    } catch (err) {
+        toast('删除失败', 'error');
+    }
+}
+
+async function quickResolve(id) {
+    const note = document.getElementById('noteInput-' + id).value;
+    await _patchFeedback(id, { status: 'resolved', admin_note: note });
+    toast('已处理 ✓', 'success');
+    loadFeedbacks(currentPage);
+    loadStats();
+}
+
+async function quickReject(id) {
+    const note = document.getElementById('noteInput-' + id).value;
+    await _patchFeedback(id, { status: 'wont_fix', admin_note: note });
+    toast('已标记不修复', 'success');
+    loadFeedbacks(currentPage);
+    loadStats();
+}
+
+async function quickReopen(id) {
+    await _patchFeedback(id, { status: 'pending' });
+    toast('已重新打开', 'success');
+    loadFeedbacks(currentPage);
+    loadStats();
+}
+
+async function _patchFeedback(id, body) {
+    return fetch(API + '/feedbacks/' + id + '?admin_token=' + getToken(), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+}
+
+async function saveNote(id) {
+    const input = document.getElementById('noteInput-' + id);
+    try {
+        const res = await fetch(API + '/feedbacks/' + id + '?admin_token=' + getToken(), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ admin_note: input.value }),
+        });
+        if (!res.ok) throw new Error('Failed');
+        toast('备注已保存', 'success');
+    } catch (err) {
+        toast('保存失败', 'error');
+    }
+}
+
+function renderPagination(total, page, perPage) {
+    const totalPages = Math.ceil(total / perPage);
+    const container = document.getElementById('pagination');
+    if (totalPages <= 1) { container.innerHTML = ''; return; }
+    let html = '';
+    html += '<button class="btn btn-outline btn-sm" onclick="loadFeedbacks(' + (page-1) + ')" ' + (page<=1?'disabled':'') + '>‹</button>';
+    for (let i = 1; i <= totalPages; i++) {
+        html += '<button class="btn ' + (i===page?'btn-primary':'btn-outline') + ' btn-sm" onclick="loadFeedbacks(' + i + ')">' + i + '</button>';
+    }
+    html += '<button class="btn btn-outline btn-sm" onclick="loadFeedbacks(' + (page+1) + ')" ' + (page>=totalPages?'disabled':'') + '>›</button>';
+    container.innerHTML = html;
+}
+
+function debounceSearch() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadFeedbacks(1), 300);
+}
+
+function formatTime(ts) {
+    const d = new Date(ts.replace(' ', 'T') + (ts.includes('+') ? '' : '+08:00'));
+    const now = new Date();
+    const diff = now - d;
+    if (diff < 60000) return '刚刚';
+    if (diff < 3600000) return Math.floor(diff / 60000) + ' 分钟前';
+    if (diff < 86400000) return Math.floor(diff / 3600000) + ' 小时前';
+    return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function statusLabel(s) {
+    const m = { pending: '待处理', investigating: '调查中', resolved: '已解决', wont_fix: '不修复' };
+    return m[s] || s;
+}
+
+function severityLabel(s) {
+    const m = { critical: '严重', major: '重要', minor: '轻微', cosmetic: '视觉' };
+    return m[s] || s;
+}
+
+function categoryLabel(s) {
+    const m = { video_analysis: '视频分析', hand_check: '手型检查' };
+    return m[s] || s;
+}
+
+function parseUA(ua) {
+    if (!ua) return '未知';
+    const parts = [];
+    // Firefox: "Firefox/130.0"
+    const ff = ua.match(/Firefox\/([\d.]+)/);
+    if (ff) parts.push('Firefox ' + ff[1]);
+    // Chrome: "Chrome/130.0.0.0" (skip if Edge is present)
+    const edge = ua.match(/Edg\/([\d.]+)/);
+    if (edge) {
+        parts.push('Edge ' + edge[1]);
+    } else {
+        const chrome = ua.match(/Chrome\/([\d.]+)/);
+        if (chrome && !ua.includes('Edg/')) parts.push('Chrome ' + chrome[1]);
+    }
+    // Safari
+    const safari = ua.match(/Version\/([\d.]+).*Safari\//);
+    if (safari && !chrome && !edge) parts.push('Safari ' + safari[1]);
+    // OS
+    if (ua.includes('Windows NT')) {
+        const win = ua.match(/Windows NT ([\d.]+)/);
+        const winMap = {'10.0':'10/11','6.3':'8.1','6.1':'7'};
+        parts.push('Windows ' + (winMap[win[1]] || win[1]));
+    } else if (ua.includes('Mac OS X')) {
+        parts.push('macOS');
+    } else if (ua.includes('Android')) {
+        parts.push('Android');
+    } else if (ua.includes('Linux')) {
+        parts.push('Linux');
+    }
+    // Mobile
+    if (ua.includes('Mobile')) parts.push('(移动端)');
+    return parts.join(' / ');
+}
+
+initAdminPage();
+</script>
+</body>
+</html>
