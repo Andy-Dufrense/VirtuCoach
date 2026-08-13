@@ -201,12 +201,24 @@ async def get_snapshot(filename: str):
     raise HTTPException(status_code=404, detail="File not found")
 
 
+# 页面类文件统一禁用浏览器缓存，避免"代码已修复但页面还是旧的"
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
+def page_response(path) -> FileResponse:
+    return FileResponse(str(path), headers=NO_CACHE_HEADERS)
+
+
 @app.get("/")
 @app.get("/index.html")
 async def serve_index():
-    index_path = os.path.join(str(FRONTEND_DIR), "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
+    index_path = FRONTEND_DIR / "index.html"
+    if index_path.exists():
+        return page_response(index_path)
     return {"error": "Frontend not found"}
 
 
@@ -214,28 +226,28 @@ async def serve_index():
 def serve_admin():
     admin_path = FRONTEND_DIR / "admin.html"
     if admin_path.exists():
-        return FileResponse(str(admin_path))
+        return page_response(admin_path)
     raise HTTPException(status_code=404, detail="Admin panel not found")
 
 
 @app.get("/dashboard.html")
 def serve_dashboard():
-    return FileResponse(str(FRONTEND_DIR / "dashboard.html"))
+    return page_response(FRONTEND_DIR / "dashboard.html")
 
 
 @app.get("/analysis.html")
 def serve_analysis():
-    return FileResponse(str(FRONTEND_DIR / "analysis.html"))
+    return page_response(FRONTEND_DIR / "analysis.html")
 
 
 @app.get("/login.html")
 def serve_login():
-    return FileResponse(str(FRONTEND_DIR / "login.html"))
+    return page_response(FRONTEND_DIR / "login.html")
 
 
 @app.get("/register.html")
 def serve_register():
-    return FileResponse(str(FRONTEND_DIR / "register.html"))
+    return page_response(FRONTEND_DIR / "register.html")
 
 
 # ═══════════════════════════════════════════
@@ -530,6 +542,9 @@ async def serve_static(filename: str):
     if not os.path.realpath(file_path).startswith(os.path.realpath(str(FRONTEND_DIR))):
         raise HTTPException(status_code=404, detail="Not found")
     if os.path.exists(file_path):
+        # HTML/CSS/JS 禁缓存，图片/字体保持默认
+        if filename.endswith((".html", ".css", ".js")):
+            return page_response(file_path)
         return FileResponse(file_path)
     raise HTTPException(status_code=404, detail="File not found")
 
