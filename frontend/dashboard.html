@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>控制台 - VirtuCoach</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .nav-bar { display:flex; align-items:center; gap:16px; padding:12px 20px; background:var(--card-bg); border:1px solid var(--card-border); border-radius:var(--radius); margin-bottom:20px; flex-wrap:wrap; }
+    .nav-bar .nav-logo { font-size:20px; font-weight:700; background:linear-gradient(135deg,var(--primary-light),var(--primary)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .nav-bar .nav-user { margin-left:auto; color:var(--text-dim); font-size:14px; }
+    .nav-bar .nav-links { display:flex; gap:8px; }
+    .hero-actions { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:24px; }
+    .hero-action-card { background:linear-gradient(135deg, #eef1f8, #f5f6fb); border:1.5px solid #d8dce8; border-radius:var(--radius-lg); padding:28px 24px; cursor:pointer; transition:all 0.25s; display:flex; align-items:center; gap:20px; text-decoration:none; }
+    .hero-action-card:hover { border-color:var(--primary-light); background:linear-gradient(135deg, #e2e6f4, #edeff8); box-shadow:0 6px 24px rgba(92,107,192,0.12); transform:translateY(-2px); }
+    .hero-action-icon { font-size:40px; width:64px; height:64px; display:flex; align-items:center; justify-content:center; border-radius:16px; flex-shrink:0; }
+    .hero-action-icon.video { background:linear-gradient(135deg, #e8eaf6, #c5cae9); }
+    .hero-action-icon.hand { background:linear-gradient(135deg, #e8f5e9, #c8e6c9); }
+    .hero-action-body h3 { margin:0 0 4px; font-size:18px; color:var(--text-bright); }
+    .hero-action-body p { margin:0; font-size:13px; color:var(--text-dim); }
+    .hero-action-arrow { margin-left:auto; font-size:20px; color:var(--text-dim); }
+    .stats-grid-dash { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px; margin-bottom:20px; }
+    .stat-card-dash { background:var(--card-bg); border:1px solid var(--card-border); border-radius:var(--radius); padding:18px 16px; text-align:center; }
+    .stat-card-dash .num { font-size:26px; font-weight:700; color:var(--primary-light); }
+    .stat-card-dash .label { font-size:12px; color:var(--text-dim); margin-top:4px; }
+    .quick-actions { display:flex; gap:10px; margin-bottom:24px; flex-wrap:wrap; }
+    .session-table { width:100%; border-collapse:collapse; font-size:14px; }
+    .session-table th { text-align:left; padding:10px 12px; border-bottom:1px solid var(--card-border); color:var(--text-dim); font-weight:600; font-size:12px; text-transform:uppercase; }
+    .session-table td { padding:10px 12px; border-bottom:1px solid var(--card-border); }
+    .session-table tr:hover td { background:var(--primary-glow); }
+    .score-badge { display:inline-block; padding:3px 10px; border-radius:6px; font-weight:600; font-size:13px; }
+    .score-good { background:var(--success-light); color:var(--success); }
+    .score-ok { background:var(--warning-light); color:var(--warning); }
+    .score-bad { background:var(--danger-light); color:var(--danger); }
+    .report-expand { cursor:pointer; color:var(--primary-light); text-decoration:underline; font-size:13px; }
+    .report-inline { background:var(--bg); border-radius:8px; padding:14px; margin:8px 0; display:none; white-space:pre-wrap; font-size:13px; max-height:300px; overflow-y:auto; }
+    .pagination { display:flex; gap:6px; justify-content:center; margin-top:20px; }
+    .chart-bar-wrap { display:flex; align-items:flex-end; gap:4px; height:120px; padding:8px 0; }
+    .chart-bar { flex:1; background:var(--primary); border-radius:4px 4px 0 0; min-width:16px; position:relative; transition:height 0.4s; }
+    .chart-bar:hover { opacity:0.8; }
+    .chart-label { text-align:center; font-size:10px; color:var(--text-dim); margin-top:4px; }
+    .chart-section { background:var(--card-bg); border:1px solid var(--card-border); border-radius:var(--radius); padding:20px; margin-bottom:20px; }
+    .chart-section h3 { margin-top:0; margin-bottom:16px; }
+    .empty-state { text-align:center; padding:40px 20px; color:var(--text-dim); }
+    .empty-state .icon { font-size:48px; margin-bottom:12px; }
+    .btn-sm { padding:6px 12px; font-size:12px; }
+    .btn-danger { background:var(--danger-light); border:1px solid var(--danger); color:var(--danger); }
+    .btn-danger:hover { background:rgba(229,57,53,0.18); }
+    @media (max-width: 640px) { .hero-actions { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- Nav bar -->
+    <div class="nav-bar">
+      <span class="nav-logo">VirtuCoach</span>
+      <span class="nav-user" id="navUser" style="margin-left:auto;">加载中...</span>
+      <button class="btn btn-secondary btn-small" onclick="VirtuCoach.logout()">退出</button>
+    </div>
+
+    <!-- Hero actions -->
+    <div class="hero-actions">
+      <div class="hero-action-card" onclick="window.location.href='/analysis.html'">
+        <div class="hero-action-icon video">🎥</div>
+        <div class="hero-action-body">
+          <h3>视频分析</h3>
+          <p>上传演奏视频，AI 分析音准、节奏与手型，生成专业报告</p>
+        </div>
+        <span class="hero-action-arrow">→</span>
+      </div>
+      <div class="hero-action-card" onclick="window.location.href='/analysis.html?mode=hand'">
+        <div class="hero-action-icon hand">🎸</div>
+        <div class="hero-action-body">
+          <h3>手型检查</h3>
+          <p>拍摄按弦手型，与标准参考图对比，纠正错误姿势</p>
+        </div>
+        <span class="hero-action-arrow">→</span>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-grid-dash" id="statsGrid">
+      <div class="stat-card-dash"><div class="num" id="statSessions">0</div><div class="label">总练习次数</div></div>
+      <div class="stat-card-dash"><div class="num" id="statAvg">--</div><div class="label">平均分</div></div>
+      <div class="stat-card-dash"><div class="num" id="statBest">--</div><div class="label">最高分</div></div>
+      <div class="stat-card-dash"><div class="num" id="statRecent">0</div><div class="label">最近7天</div></div>
+    </div>
+
+    <!-- Trend chart -->
+    <div class="chart-section" id="chartSection" style="display:none;">
+      <h3>📈 练习趋势（最近10次）</h3>
+      <div class="chart-bar-wrap" id="chartBars"></div>
+      <div style="display:flex;justify-content:space-between;margin-top:4px;" id="chartLabels"></div>
+    </div>
+
+    <!-- History -->
+    <div style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:var(--radius);padding:20px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <h3 style="margin:0;">📋 练习历史</h3>
+        <select id="modeFilter" style="padding:6px 10px;border-radius:6px;border:1px solid var(--card-border);background:var(--bg);color:var(--text);font-size:13px;">
+          <option value="">全部类型</option>
+          <option value="video_analysis">视频分析</option>
+          <option value="chord_check">和弦检查</option>
+          <option value="technique_check">技巧检查</option>
+          <option value="image_check">图片检查</option>
+        </select>
+      </div>
+      <div id="historyTable"></div>
+      <div class="pagination" id="pagination"></div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <script src="js/auth.js"></script>
+  <script>
+    (function () {
+      var currentPage = 1;
+      var currentMode = "";
+
+      // Auth check
+      if (!VirtuCoach.requireAuth()) return;
+
+      // Load user info
+      (async function init() {
+        var user = VirtuCoach.getCachedUser() || await VirtuCoach.fetchUser();
+        if (user) {
+          document.getElementById("navUser").textContent = "👤 " + user.username;
+        } else {
+          document.getElementById("navUser").textContent = "未登录";
+        }
+        loadStats();
+        loadSessions();
+      })();
+
+      async function loadStats() {
+        try {
+          var resp = await fetch("/api/practice/stats", {
+            headers: VirtuCoach.getAuthHeaders(),
+          });
+          if (!resp.ok) return;
+          var s = await resp.json();
+          document.getElementById("statSessions").textContent = s.total_sessions;
+          document.getElementById("statAvg").textContent = s.average_score || "--";
+          document.getElementById("statBest").textContent = s.highest_score || "--";
+          document.getElementById("statRecent").textContent = s.total_sessions;
+
+          // Render chart
+          if (s.recent_scores && s.recent_scores.length > 1) {
+            document.getElementById("chartSection").style.display = "";
+            var maxScore = Math.max.apply(null, s.recent_scores.concat([100]));
+            var barsHtml = "";
+            var labelsHtml = "";
+            s.recent_scores.forEach(function (score, i) {
+              var h = Math.max((score / maxScore) * 100, 4);
+              barsHtml += '<div class="chart-bar" style="height:' + h + 'px;" title="第' + (i + 1) + '次: ' + score + '分"></div>';
+              labelsHtml += '<span class="chart-label">' + (i + 1) + '</span>';
+            });
+            document.getElementById("chartBars").innerHTML = barsHtml;
+            document.getElementById("chartLabels").innerHTML = labelsHtml;
+          }
+        } catch (e) {}
+      }
+
+      async function loadSessions() {
+        try {
+          var url = "/api/practice/sessions?page=" + currentPage + "&per_page=15";
+          if (currentMode) url += "&mode=" + currentMode;
+          var resp = await fetch(url, { headers: VirtuCoach.getAuthHeaders() });
+          if (!resp.ok) return;
+          var data = await resp.json();
+
+          if (data.items.length === 0) {
+            document.getElementById("historyTable").innerHTML =
+              '<div class="empty-state"><div class="icon">🎸</div><p>还没有练习记录</p><button class="btn btn-primary" onclick="window.location.href=\'/analysis.html\'">开始第一次练习</button></div>';
+            document.getElementById("pagination").innerHTML = "";
+            return;
+          }
+
+          var html = '<table class="session-table"><thead><tr><th>日期</th><th>类型</th><th>乐器</th><th>曲目/和弦</th><th>分数</th><th>操作</th></tr></thead><tbody>';
+          data.items.forEach(function (s) {
+            var modeLabel = { video_analysis: "视频分析", chord_check: "和弦检查", technique_check: "技巧检查", image_check: "图片检查" }[s.mode] || s.mode;
+            var score = s.overall_score || 0;
+            var scoreClass = score >= 80 ? "score-good" : score >= 60 ? "score-ok" : "score-bad";
+            var date = s.created_at ? s.created_at.replace("T", " ").substring(0, 16) : "";
+            html += '<tr>';
+            html += '<td style="white-space:nowrap;">' + date + '</td>';
+            html += '<td>' + modeLabel + '</td>';
+            html += '<td>' + (s.instrument === "guitar" ? "🎸" : s.instrument) + '</td>';
+            html += '<td>' + (s.chord_or_track || "-") + '</td>';
+            html += '<td><span class="score-badge ' + scoreClass + '">' + score + '</span></td>';
+            html += '<td>';
+            if (s.report_text) {
+              html += '<span class="report-expand" onclick="toggleReport(' + s.id + ')">查看报告</span> ';
+            }
+            html += '<button class="btn btn-danger btn-sm" onclick="deleteSession(' + s.id + ')">删除</button>';
+            html += '</td></tr>';
+            if (s.report_text) {
+              html += '<tr id="reportRow' + s.id + '" style="display:none;"><td colspan="6"><div class="report-inline">' + escHtml(s.report_text) + '</div></td></tr>';
+            }
+          });
+          html += '</tbody></table>';
+          document.getElementById("historyTable").innerHTML = html;
+
+          // Pagination
+          var pages = Math.ceil(data.total / 15);
+          var pagHtml = "";
+          if (pages > 1) {
+            for (var p = 1; p <= pages; p++) {
+              pagHtml += '<button class="btn btn-small ' + (p === currentPage ? "btn-primary" : "btn-secondary") + '" onclick="goPage(' + p + ')">' + p + '</button>';
+            }
+          }
+          document.getElementById("pagination").innerHTML = pagHtml;
+        } catch (e) {}
+      }
+
+      window.toggleReport = function (id) {
+        var row = document.getElementById("reportRow" + id);
+        row.style.display = row.style.display === "none" ? "table-row" : "none";
+      };
+
+      window.deleteSession = async function (id) {
+        if (!confirm("确定删除这条练习记录？")) return;
+        try {
+          var resp = await fetch("/api/practice/sessions/" + id, {
+            method: "DELETE",
+            headers: VirtuCoach.getAuthHeaders(),
+          });
+          if (resp.ok) {
+            VirtuCoach.showToast("已删除", "success");
+            loadStats();
+            loadSessions();
+          } else {
+            throw new Error("删除失败");
+          }
+        } catch (e) {
+          VirtuCoach.showToast(e.message, "error");
+        }
+      };
+
+      window.goPage = function (p) {
+        currentPage = p;
+        loadSessions();
+        window.scrollTo(0, 0);
+      };
+
+      function escHtml(s) {
+        return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      }
+
+      document.getElementById("modeFilter").addEventListener("change", function () {
+        currentMode = this.value;
+        currentPage = 1;
+        loadSessions();
+      });
+    })();
+  </script>
+</body>
+</html>

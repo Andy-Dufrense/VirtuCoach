@@ -25,12 +25,23 @@ def init_feedback_db():
             steps_to_reproduce TEXT DEFAULT '',
             screenshot TEXT DEFAULT '',
             tester_name TEXT DEFAULT '',
+            user_id INTEGER DEFAULT NULL,
+            username TEXT DEFAULT '',
             browser_info TEXT DEFAULT '',
             status TEXT DEFAULT 'pending',
             admin_note TEXT DEFAULT '',
             created_at DATETIME DEFAULT (datetime('now', 'localtime'))
         )
     """)
+    # Add missing columns for existing databases
+    try:
+        conn.execute("ALTER TABLE feedbacks ADD COLUMN user_id INTEGER DEFAULT NULL")
+    except:
+        pass
+    try:
+        conn.execute("ALTER TABLE feedbacks ADD COLUMN username TEXT DEFAULT ''")
+    except:
+        pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_fb_project ON feedbacks(project)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_fb_status ON feedbacks(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_fb_created ON feedbacks(created_at DESC)")

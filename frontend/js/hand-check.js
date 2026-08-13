@@ -111,7 +111,9 @@ function onTechniqueSelect() {
 
 async function loadChordList() {
     try {
-        const resp = await fetch(`${API_BASE}/api/chords`);
+        const resp = await fetch(`${API_BASE}/api/chords`, {
+            headers: window.VirtuCoach ? window.VirtuCoach.getAuthHeaders() : {}
+        });
         const data = await resp.json();
         availableChords = data.chords || [];
         if (availableChords.length === 0) {
@@ -513,6 +515,7 @@ async function analyzeChordHand() {
     try {
         const resp = await fetch(`${API_BASE}/api/check-chord`, {
             method: "POST",
+            headers: window.VirtuCoach ? window.VirtuCoach.getAuthHeaders() : {},
             body: formData,
         });
         if (!resp.ok) {
@@ -563,23 +566,23 @@ function renderChordResult(data) {
     const badge = document.getElementById("handStatusBadge");
     if (!data.hands_detected) {
         badge.textContent = "⚠️ 未检测到手部";
-        badge.style.background = "rgba(253,203,110,0.2)";
-        badge.style.color = "#fdcb6e";
+        badge.style.background = "var(--warning-light)";
+        badge.style.color = "var(--warning)";
     } else if (!data.issues || data.issues.length === 0) {
         badge.textContent = "✅ 和弦手型规范";
-        badge.style.background = "rgba(0,184,148,0.2)";
-        badge.style.color = "#00b894";
+        badge.style.background = "var(--success-light)";
+        badge.style.color = "var(--success)";
     } else {
         const severeCount = data.issues.filter(i => i.severity === "severe").length;
         badge.textContent = severeCount > 0 ? `⚠️ ${data.issues.length} 个问题` : `💡 ${data.issues.length} 个建议`;
-        badge.style.background = severeCount > 0 ? "rgba(225,112,85,0.2)" : "rgba(253,203,110,0.2)";
-        badge.style.color = severeCount > 0 ? "#e17055" : "#fdcb6e";
+        badge.style.background = severeCount > 0 ? "var(--danger-light)" : "var(--warning-light)";
+        badge.style.color = severeCount > 0 ? "var(--danger)" : "var(--warning)";
     }
 
     const qualityNote = data.quality_note || "";
     if (qualityNote) {
-        const noteBg = data.audio_quality === "poor" ? "rgba(225,112,85,0.1)" : "rgba(253,203,110,0.1)";
-        const noteColor = data.audio_quality === "poor" ? "#e17055" : "#fdcb6e";
+        const noteBg = data.audio_quality === "poor" ? "var(--danger-light)" : "var(--warning-light)";
+        const noteColor = data.audio_quality === "poor" ? "var(--danger)" : "var(--warning)";
         const noteIcon = data.audio_quality === "poor" ? "⚠️" : "💡";
         const qualityNoteHtml = `<div style="margin-top:12px;padding:10px 12px;background:${noteBg};border-radius:8px;border-left:3px solid ${noteColor};">
             <span style="color:${noteColor};font-size:14px;line-height:1.5;">${noteIcon} ${qualityNote}</span>
@@ -597,7 +600,7 @@ function renderChordResult(data) {
         stringResultsHtml += '<h4 style="margin:0 0 8px 0;">🎵 逐弦音色检测</h4>';
         stringResults.forEach(sr => {
             const statusIcon = sr.ok ? "✅" : (sr.status_text === "信号不足以判断" ? "⚠️" : "❌");
-            const statusColor = sr.ok ? "var(--success)" : (sr.status_text === "信号不足以判断" ? "var(--warning, #fdcb6e)" : "var(--danger, #e17055)");
+            const statusColor = sr.ok ? "var(--success)" : (sr.status_text === "信号不足以判断" ? "var(--warning)" : "var(--danger)");
             const statusText = sr.status_text || (sr.ok ? "清晰 ✓" : (!sr.has_signal ? "未检测到拨弦" : "信号弱"));
             stringResultsHtml += `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;color:${statusColor};font-size:14px;">
                 ${statusIcon} <b>${sr.string_name}</b> ${sr.note || ""} — ${statusText}
@@ -653,7 +656,7 @@ function renderChordResult(data) {
         fingerComparison.forEach(fc => {
             const icon = statusIcon[fc.status] || "➖";
             const label = statusLabel[fc.status] || fc.status;
-            const rowColor = fc.status === "error" ? "rgba(225,112,85,0.08)" : (fc.status === "deviation" ? "rgba(253,203,110,0.08)" : "");
+            const rowColor = fc.status === "error" ? "var(--danger-light)" : (fc.status === "deviation" ? "var(--warning-light)" : "");
             compareHtml += `<tr style="border-bottom:1px solid var(--card-border);background:${rowColor};">
                 <td style="padding:6px 4px;font-weight:600;">${fc.finger || ""}</td>
                 <td style="padding:6px 4px;color:var(--text-dim);">${fc.kb_expect || ""}</td>
@@ -678,7 +681,7 @@ function renderChordResult(data) {
 
     const tips = data.practice_tips || [];
     if (tips.length > 0) {
-        let tipsHtml = '<div style="margin-top:12px;padding:12px;background:rgba(9,132,227,0.1);border-radius:8px;">';
+        let tipsHtml = '<div style="margin-top:12px;padding:12px;background:var(--primary-glow);border-radius:8px;">';
         tipsHtml += '<h4 style="margin:0 0 8px 0;color:var(--primary);">🎯 后续练习建议</h4>';
         tips.forEach((tip, idx) => {
             tipsHtml += `<div style="padding:4px 0;font-size:14px;line-height:1.6;">${idx+1}. ${tip}</div>`;

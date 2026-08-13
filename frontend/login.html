@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 - VirtuCoach</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .auth-page { display:flex; justify-content:center; align-items:center; min-height:80vh; }
+    .auth-card { background:var(--card-bg); border:1px solid var(--card-border); border-radius:var(--radius); padding:36px 32px; width:100%; max-width:400px; }
+    .auth-card .logo { font-size:28px; font-weight:700; text-align:center; margin-bottom:4px; background:linear-gradient(135deg,var(--primary-light),var(--primary)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .auth-card .subtitle { text-align:center; color:var(--text-dim); margin-bottom:28px; font-size:14px; }
+    .form-group { margin-bottom:16px; }
+    .form-group label { display:block; margin-bottom:6px; font-size:14px; color:var(--text-dim); }
+    .form-group input { width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--card-border); background:var(--bg); color:var(--text); font-size:15px; box-sizing:border-box; }
+    .form-group input:focus { outline:none; border-color:var(--primary-light); }
+    .auth-error { color:var(--danger); font-size:13px; margin-bottom:12px; display:none; }
+    .auth-link { text-align:center; margin-top:16px; font-size:14px; color:var(--text-dim); }
+    .auth-link a { color:var(--primary-light); text-decoration:none; }
+    .auth-link a:hover { text-decoration:underline; }
+    .btn-full { width:100%; padding:12px; font-size:16px; }
+    .pw-wrap { position:relative; }
+    .pw-toggle { position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:14px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="auth-page">
+      <div class="auth-card">
+        <div class="logo">VirtuCoach</div>
+        <div class="subtitle">AI 吉他陪练系统</div>
+        <div class="auth-error" id="authError"></div>
+        <form id="loginForm">
+          <div class="form-group">
+            <label>用户名或邮箱</label>
+            <input type="text" id="username" required autocomplete="username" placeholder="请输入用户名或邮箱">
+          </div>
+          <div class="form-group">
+            <label>密码</label>
+            <div class="pw-wrap">
+              <input type="password" id="password" required autocomplete="current-password" placeholder="请输入密码">
+              <button type="button" class="pw-toggle" id="pwToggle">👁</button>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary btn-full">登 录</button>
+        </form>
+        <div class="auth-link">
+          还没有账号？<a href="/register.html">立即注册</a>
+        </div>
+        <div class="auth-link" style="margin-top:8px;">
+          <a href="/analysis.html">游客体验（免登录）</a>
+        </div>
+      </div>
+    </div>
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <script src="js/auth.js"></script>
+  <script>
+    (function () {
+      var token = localStorage.getItem("virtucoach_token");
+      if (token) {
+        // Already logged in, verify token
+        fetch("/api/auth/me", { headers: { Authorization: "Bearer " + token } })
+          .then(function (r) { if (r.ok) window.location.href = "/dashboard.html"; });
+      }
+
+      document.getElementById("pwToggle").addEventListener("click", function () {
+        var pw = document.getElementById("password");
+        pw.type = pw.type === "password" ? "text" : "password";
+      });
+
+      document.getElementById("loginForm").addEventListener("submit", async function (e) {
+        e.preventDefault();
+        var err = document.getElementById("authError");
+        err.style.display = "none";
+        try {
+          var resp = await fetch("/api/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              username: document.getElementById("username").value.trim(),
+              password: document.getElementById("password").value,
+            }),
+          });
+          var data = await resp.json();
+          if (!resp.ok) throw new Error(data.detail || "登录失败");
+          localStorage.setItem("virtucoach_token", data.access_token);
+          if (data.user) {
+            localStorage.setItem("virtucoach_user", JSON.stringify(data.user));
+          }
+          window.location.href = "/dashboard.html";
+        } catch (ex) {
+          err.textContent = ex.message;
+          err.style.display = "block";
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

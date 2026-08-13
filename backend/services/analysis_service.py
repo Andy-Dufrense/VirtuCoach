@@ -76,7 +76,8 @@ class AnalysisService:
     }
 
     def __init__(self, audio_analyzer, video_processor, deepseek_agent,
-                 audio_separator, vision_analyzer, reference_db, knowledge_db=None):
+                 audio_separator, vision_analyzer, reference_db, knowledge_db=None,
+                 practice_db_getter=None):
         self.audio_analyzer = audio_analyzer
         self.video_processor = video_processor
         self.deepseek_agent = deepseek_agent
@@ -84,6 +85,7 @@ class AnalysisService:
         self.vision_analyzer = vision_analyzer
         self.reference_db = reference_db
         self.knowledge_db = knowledge_db
+        self.practice_db_getter = practice_db_getter
 
     async def run(self, task_id: str, video_path: str, instrument: str,
                   level: str, title: str, tasks: dict, capo: int = 0) -> None:
@@ -266,6 +268,29 @@ class AnalysisService:
             tasks[task_id]["status"] = "completed"
             tasks[task_id]["message"] = "分析完成！"
             tasks[task_id]["result"] = result
+
+            # 已登录用户自动保存练习记录
+            user_id = tasks[task_id].get("user_id")
+            if user_id and self.practice_db_getter:
+                try:
+                    conn = self.practice_db_getter()
+                    conn.execute(
+                        """INSERT INTO practice_sessions
+                           (user_id, video_filename, instrument, skill_level,
+                            chord_or_track, overall_score, audio_score, hand_score,
+                            report_text, mode)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        [user_id, os.path.basename(video_path), instrument, level,
+                         title,
+                         result.get("overall_score", 0) if isinstance(result, dict) else 0,
+                         result.get("pitch_score", 0) if isinstance(result, dict) else 0,
+                         result.get("hand_score", 0) if isinstance(result, dict) else 0,
+                         report, "video_analysis"],
+                    )
+                    conn.commit()
+                    conn.close()
+                except Exception:
+                    logger.warning("保存练习记录失败", exc_info=True)
 
         except Exception as e:
             tasks[task_id]["status"] = "failed"

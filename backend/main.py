@@ -30,7 +30,7 @@ from pathlib import Path
 
 import uuid
 
-from fastapi import FastAPI, HTTPException, File, Form, UploadFile, Query
+from fastapi import FastAPI, HTTPException, File, Form, UploadFile, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -56,6 +56,9 @@ from reference_db import get_db
 from chord_analyzer import ChordAnalyzer
 from feedback_db import init_feedback_db, get_db as get_feedback_db
 from feedback_models import FeedbackUpdate, FeedbackResponse, StatsResponse
+from user_db import init_user_db, get_db as get_user_db
+from user_service import decode_access_token, get_user_by_id
+from practice_db import init_practice_db, get_db as get_practice_db
 
 audio_analyzer = AudioAnalyzer()
 video_processor = VideoProcessor()
@@ -84,6 +87,7 @@ analysis_service = AnalysisService(
     vision_analyzer=vision_analyzer,
     reference_db=reference_db,
     knowledge_db=knowledge_db,
+    practice_db_getter=get_practice_db,
 )
 
 hand_check_service = HandCheckService(
@@ -120,17 +124,23 @@ FEEDBACK_SCREENSHOT_DIR = Path(UPLOAD_DIR) / "feedback_screenshots"
 FEEDBACK_SCREENSHOT_DIR.mkdir(exist_ok=True)
 ADMIN_PASSWORD = "andy0716"
 init_feedback_db()
+init_user_db()
+init_practice_db()
 
 # ---- register routers ----
 from routers.analysis import create_analysis_router
 from routers.hand_check import create_hand_check_router
 from routers.references import create_references_router
 from routers.chat import create_chat_router
+from routers.auth import create_auth_router
+from routers.practice import create_practice_router
 
 analysis_router = create_analysis_router(analysis_service, UPLOAD_DIR, str(FRONTEND_DIR))
-hand_check_router = create_hand_check_router(hand_check_service, UPLOAD_DIR)
+hand_check_router = create_hand_check_router(hand_check_service, UPLOAD_DIR, get_practice_db)
 references_router = create_references_router(reference_db, video_processor, vision_analyzer, UPLOAD_DIR)
 chat_router = create_chat_router(deepseek_agent, knowledge_db)
+auth_router = create_auth_router()
+practice_router = create_practice_router()
 
 analysis_router.tasks = tasks
 chat_router.tasks = tasks
@@ -139,6 +149,8 @@ app.include_router(analysis_router)
 app.include_router(hand_check_router)
 app.include_router(references_router)
 app.include_router(chat_router)
+app.include_router(auth_router)
+app.include_router(practice_router)
 
 logger.info("Routes registered: analysis, hand_check, references, chat")
 
@@ -205,6 +217,26 @@ def serve_admin():
     raise HTTPException(status_code=404, detail="Admin panel not found")
 
 
+@app.get("/dashboard.html")
+def serve_dashboard():
+    return FileResponse(str(FRONTEND_DIR / "dashboard.html"))
+
+
+@app.get("/analysis.html")
+def serve_analysis():
+    return FileResponse(str(FRONTEND_DIR / "analysis.html"))
+
+
+@app.get("/login.html")
+def serve_login():
+    return FileResponse(str(FRONTEND_DIR / "login.html"))
+
+
+@app.get("/register.html")
+def serve_register():
+    return FileResponse(str(FRONTEND_DIR / "register.html"))
+
+
 # ═══════════════════════════════════════════
 # Feedback System
 # ═══════════════════════════════════════════
@@ -233,7 +265,21 @@ async def create_feedback(
     tester_name: str = Form(""),
     browser_info: str = Form(""),
     screenshot: UploadFile | None = None,
+    authorization: str | None = Header(None),
 ):
+    # Auto-collect user info from auth token
+    user_id = None
+    username = ""
+    if authorization and authorization.startswith("Bearer "):
+        try:
+            payload = decode_access_token(authorization[7:])
+            user = get_user_by_id(payload["user_id"])
+            if user:
+                user_id = user.id
+                username = user.username
+        except Exception:
+            pass
+
     screenshot_name = ""
     if screenshot and screenshot.filename:
         ext = Path(screenshot.filename).suffix or ".png"
@@ -244,7 +290,6 @@ async def create_feedback(
         (FEEDBACK_SCREENSHOT_DIR / screenshot_name).write_bytes(contents)
 
     conn = get_feedback_db()
-    # 防重复：同一标题+描述 5 秒内的重复提交
     existing = conn.execute(
         """SELECT id FROM feedbacks
            WHERE title = ? AND description = ?
@@ -258,10 +303,10 @@ async def create_feedback(
 
     conn.execute(
         """INSERT INTO feedbacks (project, category, severity, title, description,
-           steps_to_reproduce, screenshot, tester_name, browser_info)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           steps_to_reproduce, screenshot, tester_name, user_id, username, browser_info)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [project, category, severity, title, description,
-         steps_to_reproduce, screenshot_name, tester_name, browser_info],
+         steps_to_reproduce, screenshot_name, tester_name, user_id, username, browser_info],
     )
     conn.commit()
     feedback_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -395,6 +440,73 @@ def get_feedback_stats():
         total=total, pending=pending, investigating=investigating,
         resolved=resolved, today=today, by_project=by_project,
     )
+
+
+@app.get("/api/admin/overview")
+def get_admin_overview():
+    """Data overview for admin dashboard."""
+    user_conn = get_user_db()
+    practice_conn = get_practice_db()
+    fb_conn = get_feedback_db()
+
+    total_users = user_conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    today_users = user_conn.execute(
+        "SELECT COUNT(*) FROM users WHERE date(created_at) = date('now','localtime')"
+    ).fetchone()[0]
+    total_sessions = practice_conn.execute("SELECT COUNT(*) FROM practice_sessions").fetchone()[0]
+    today_sessions = practice_conn.execute(
+        "SELECT COUNT(*) FROM practice_sessions WHERE date(created_at) = date('now','localtime')"
+    ).fetchone()[0]
+    avg_score = practice_conn.execute(
+        "SELECT AVG(overall_score) FROM practice_sessions WHERE overall_score > 0"
+    ).fetchone()[0] or 0
+    total_feedbacks = fb_conn.execute("SELECT COUNT(*) FROM feedbacks").fetchone()[0]
+
+    user_conn.close()
+    practice_conn.close()
+    fb_conn.close()
+
+    return {
+        "total_users": total_users,
+        "today_users": today_users,
+        "total_sessions": total_sessions,
+        "today_sessions": today_sessions,
+        "avg_score": round(avg_score, 1),
+        "total_feedbacks": total_feedbacks,
+    }
+
+
+@app.get("/api/admin/users")
+def get_admin_users():
+    """List all users with their practice statistics."""
+    user_conn = get_user_db()
+    practice_conn = get_practice_db()
+
+    users = user_conn.execute(
+        "SELECT id, username, email, created_at, last_login FROM users ORDER BY created_at DESC"
+    ).fetchall()
+
+    result = []
+    for u in users:
+        row = dict(u)
+        row["practice_count"] = practice_conn.execute(
+            "SELECT COUNT(*) FROM practice_sessions WHERE user_id = ?", [row["id"]]
+        ).fetchone()[0]
+        row["avg_score"] = practice_conn.execute(
+            "SELECT AVG(overall_score) FROM practice_sessions WHERE user_id = ? AND overall_score > 0",
+            [row["id"]],
+        ).fetchone()[0] or 0
+        row["avg_score"] = round(row["avg_score"], 1)
+        row["last_practice"] = practice_conn.execute(
+            "SELECT created_at FROM practice_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            [row["id"]],
+        ).fetchone()
+        row["last_practice"] = row["last_practice"][0] if row["last_practice"] else None
+        result.append(row)
+
+    user_conn.close()
+    practice_conn.close()
+    return {"users": result}
 
 
 @app.get("/{filename:path}")

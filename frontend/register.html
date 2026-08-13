@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>注册 - VirtuCoach</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .auth-page { display:flex; justify-content:center; align-items:center; min-height:80vh; }
+    .auth-card { background:var(--card-bg); border:1px solid var(--card-border); border-radius:var(--radius); padding:36px 32px; width:100%; max-width:400px; }
+    .auth-card .logo { font-size:28px; font-weight:700; text-align:center; margin-bottom:4px; background:linear-gradient(135deg,var(--primary-light),var(--primary)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .auth-card .subtitle { text-align:center; color:var(--text-dim); margin-bottom:28px; font-size:14px; }
+    .form-group { margin-bottom:14px; }
+    .form-group label { display:block; margin-bottom:6px; font-size:14px; color:var(--text-dim); }
+    .form-group input { width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--card-border); background:var(--bg); color:var(--text); font-size:15px; box-sizing:border-box; }
+    .form-group input:focus { outline:none; border-color:var(--primary-light); }
+    .field-hint { font-size:11px; color:var(--text-dim); margin-top:3px; }
+    .field-error { font-size:11px; color:var(--danger); margin-top:3px; display:none; }
+    .auth-link { text-align:center; margin-top:16px; font-size:14px; color:var(--text-dim); }
+    .auth-link a { color:var(--primary-light); text-decoration:none; }
+    .auth-link a:hover { text-decoration:underline; }
+    .btn-full { width:100%; padding:12px; font-size:16px; }
+    .pw-wrap { position:relative; }
+    .pw-toggle { position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:14px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="auth-page">
+      <div class="auth-card">
+        <div class="logo">VirtuCoach</div>
+        <div class="subtitle">创建你的练习账号</div>
+        <form id="registerForm">
+          <div class="form-group">
+            <label>用户名</label>
+            <input type="text" id="username" required placeholder="3-30个字符，支持中英文、数字和下划线" maxlength="30" minlength="3">
+            <div class="field-hint">3-30个字符，支持中英文、数字和下划线</div>
+            <div class="field-error" id="usernameError"></div>
+          </div>
+          <div class="form-group">
+            <label>邮箱</label>
+            <input type="email" id="email" required placeholder="your@email.com">
+            <div class="field-error" id="emailError"></div>
+          </div>
+          <div class="form-group">
+            <label>密码</label>
+            <div class="pw-wrap">
+              <input type="password" id="password" required placeholder="至少6个字符" minlength="6" maxlength="128">
+              <button type="button" class="pw-toggle" id="pwToggle1">👁</button>
+            </div>
+            <div class="field-error" id="passwordError"></div>
+          </div>
+          <div class="form-group">
+            <label>确认密码</label>
+            <div class="pw-wrap">
+              <input type="password" id="confirm" required placeholder="再次输入密码">
+              <button type="button" class="pw-toggle" id="pwToggle2">👁</button>
+            </div>
+            <div class="field-error" id="confirmError"></div>
+          </div>
+          <button type="submit" class="btn btn-primary btn-full">注 册</button>
+        </form>
+        <div class="auth-link">
+          已有账号？<a href="/login.html">立即登录</a>
+        </div>
+      </div>
+    </div>
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <script src="js/auth.js"></script>
+  <script>
+    (function () {
+      if (localStorage.getItem("virtucoach_token")) {
+        window.location.href = "/dashboard.html";
+      }
+
+      function showErr(id, msg) {
+        var el = document.getElementById(id);
+        el.textContent = msg;
+        el.style.display = msg ? "block" : "none";
+      }
+
+      document.querySelectorAll(".pw-toggle").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var input = this.parentElement.querySelector("input");
+          input.type = input.type === "password" ? "text" : "password";
+        });
+      });
+
+      document.getElementById("registerForm").addEventListener("submit", async function (e) {
+        e.preventDefault();
+        var username = document.getElementById("username").value.trim();
+        var email = document.getElementById("email").value.trim();
+        var password = document.getElementById("password").value;
+        var confirm = document.getElementById("confirm").value;
+
+        // Client-side validation
+        var valid = true;
+        if (!/^[a-zA-Z0-9_一-龥]{3,30}$/.test(username)) {
+          showErr("usernameError", "用户名需3-30个字符，仅支持字母、数字、下划线和中文");
+          valid = false;
+        } else { showErr("usernameError", ""); }
+        if (!/^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/.test(email)) {
+          showErr("emailError", "邮箱格式不正确");
+          valid = false;
+        } else { showErr("emailError", ""); }
+        if (password.length < 6) {
+          showErr("passwordError", "密码至少6个字符");
+          valid = false;
+        } else { showErr("passwordError", ""); }
+        if (password !== confirm) {
+          showErr("confirmError", "两次密码输入不一致");
+          valid = false;
+        } else { showErr("confirmError", ""); }
+        if (!valid) return;
+
+        try {
+          var resp = await fetch("/api/auth/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: username, email: email, password: password }),
+          });
+          var data = await resp.json();
+          if (!resp.ok) throw new Error(data.detail || "注册失败");
+          VirtuCoach.showToast("注册成功！即将跳转到登录页...", "success");
+          setTimeout(function () { window.location.href = "/login.html"; }, 1500);
+        } catch (ex) {
+          VirtuCoach.showToast(ex.message, "error");
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

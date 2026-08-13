@@ -21,6 +21,7 @@ uploads/
 tmp/
 *.tmp
 logs/
+backend/snapshots/
 
 # --- AI / tool caches ---
 .code-review-graph/

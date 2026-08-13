@@ -3,11 +3,42 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>反馈管理 - VirtuCoach</title>
+<title>管理面板 - VirtuCoach</title>
 <link rel="stylesheet" href="style.css">
 <style>
-/* Admin-specific overrides */
-.admin-container { max-width: 1000px; margin: 0 auto; padding: 20px; }
+.admin-container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+
+/* ── Tab Navigation ── */
+.admin-tabs {
+    display: flex; gap: 0; background: var(--card-bg);
+    border: 1px solid var(--card-border); border-radius: var(--radius);
+    overflow: hidden; margin-bottom: 20px;
+}
+.admin-tab {
+    flex: 1; padding: 14px 20px; border: none; background: transparent;
+    font-size: 15px; font-weight: 600; font-family: var(--font);
+    color: var(--text-dim); cursor: pointer; transition: all 0.2s;
+    border-bottom: 3px solid transparent;
+}
+.admin-tab:hover { color: var(--text); background: var(--card-hover); }
+.admin-tab.active {
+    color: var(--primary); border-bottom-color: var(--primary);
+    background: var(--primary-glow);
+}
+
+/* ── Stats Cards ── */
+.overview-stats {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 14px; margin-bottom: 24px;
+}
+.overview-stat-card {
+    background: var(--card-bg); border: 1px solid var(--card-border);
+    border-radius: var(--radius); padding: 20px; text-align: center;
+}
+.overview-stat-card .num { font-size: 32px; font-weight: 700; color: var(--primary-dark); }
+.overview-stat-card .label { font-size: 0.82rem; color: var(--text-dim); margin-top: 4px; }
+
+/* ── Feedback Section ── */
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin-bottom: 20px; }
 .stat-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius); padding: 16px; text-align: center; }
 .stat-card .num { font-size: 28px; font-weight: 700; color: var(--primary-light); }
@@ -19,18 +50,17 @@
 .feedback-header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; cursor: pointer; flex-wrap: wrap; }
 .feedback-header .expand-icon { font-size: 10px; transition: transform 0.2s; color: var(--text-dim); }
 .feedback-item.expanded .expand-icon { transform: rotate(90deg); }
-.project-tag { background: rgba(108,92,231,0.15); color: var(--primary-light); padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+.project-tag { background: var(--primary-glow); color: var(--primary-dark); padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
 .title-text { flex: 1; min-width: 200px; font-size: 0.875rem; }
 .meta { display: flex; gap: 8px; align-items: center; font-size: 0.8rem; color: var(--text-dim); }
 .badge { padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
-.badge-pending { background: rgba(253,203,110,0.15); color: var(--warning); }
-.badge-investigating { background: rgba(108,92,231,0.15); color: var(--primary-light); }
-.badge-resolved { background: rgba(0,184,148,0.15); color: var(--success); }
-.badge-wont_fix { background: rgba(136,136,170,0.15); color: var(--text-dim); }
-.badge-critical { background: rgba(225,112,85,0.15); color: var(--danger); }
-.badge-major { background: rgba(225,112,85,0.1); color: #fab1a0; }
-.badge-minor { background: rgba(253,203,110,0.1); color: #ffeaa7; }
-.badge-cosmetic { background: rgba(136,136,170,0.1); color: var(--text-dim); }
+.badge-pending { background: var(--warning-light); color: var(--warning); }
+.badge-investigating { background: var(--primary-glow); color: var(--primary-dark); }
+.badge-resolved { background: var(--success-light); color: var(--success); }
+.badge-wont_fix { background: var(--bg); color: var(--text-dim); }
+.badge-critical, .badge-major { background: var(--danger-light); color: var(--danger); }
+.badge-minor { background: var(--warning-light); color: var(--warning); }
+.badge-cosmetic { background: var(--bg); color: var(--text-dim); }
 .feedback-detail { display: none; padding: 0 16px 16px; border-top: 1px solid var(--card-border); }
 .feedback-item.expanded .feedback-detail { display: block; }
 .feedback-detail .field { margin-top: 12px; }
@@ -44,6 +74,28 @@
 .btn-outline { background: transparent; border: 1px solid var(--card-border); color: var(--text); }
 .btn-sm { padding: 6px 12px; font-size: 0.8rem; }
 .empty { text-align: center; padding: 40px 20px; color: var(--text-dim); }
+
+/* ── User Table ── */
+.user-table-wrap { overflow-x: auto; }
+.user-table {
+    width: 100%; border-collapse: collapse; font-size: 0.875rem;
+    background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius); overflow: hidden;
+}
+.user-table th, .user-table td {
+    padding: 12px 14px; text-align: left; border-bottom: 1px solid var(--card-border);
+}
+.user-table th {
+    background: var(--card-hover); font-size: 0.75rem; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600;
+}
+.user-table tbody tr:hover { background: var(--card-hover); }
+.user-table .score-good { color: var(--success); font-weight: 600; }
+.user-table .score-avg { color: var(--warning); font-weight: 600; }
+.user-table .score-low { color: var(--text-dim); }
+
+/* ── Section visibility ── */
+.admin-section { display: none; }
+.admin-section.active { display: block; }
 </style>
 </head>
 <body>
@@ -51,7 +103,7 @@
 <div class="app">
     <header class="header">
         <div class="logo">VirtuCoach</div>
-        <div class="subtitle">反馈管理系统</div>
+        <div class="subtitle">管理面板</div>
     </header>
 
     <!-- Password gate -->
@@ -68,7 +120,21 @@
 
     <!-- Dashboard (hidden until login) -->
     <div id="dashboard" style="display:none;">
-        <div class="admin-container">
+
+        <!-- Tab Navigation -->
+        <div class="admin-tabs">
+            <button class="admin-tab active" onclick="switchTab('overview')">📊 数据概览</button>
+            <button class="admin-tab" onclick="switchTab('feedbacks')">📝 意见收集</button>
+            <button class="admin-tab" onclick="switchTab('users')">👥 用户管理</button>
+        </div>
+
+        <!-- Tab 1: Data Overview -->
+        <div id="section-overview" class="admin-section active">
+            <div class="overview-stats" id="overviewStats"></div>
+        </div>
+
+        <!-- Tab 2: Feedback Management -->
+        <div id="section-feedbacks" class="admin-section">
             <div class="stats-grid" id="statsGrid"></div>
 
             <div style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:var(--radius);padding:16px;margin-bottom:12px;">
@@ -82,9 +148,9 @@
                     <select id="filterStatus" onchange="loadFeedbacks()">
                         <option value="">全部状态</option>
                         <option value="pending">待处理</option>
-                        <option value="investigating">调查中</option>
-                        <option value="resolved">已解决</option>
-                        <option value="wont_fix">不修复</option>
+                        <option value="investigating">处理中</option>
+                        <option value="resolved">已回复</option>
+                        <option value="wont_fix">已知悉</option>
                     </select>
                     <input type="search" id="filterSearch" placeholder="搜索关键词..." oninput="debounceSearch()">
                     <button class="btn btn-outline btn-sm" onclick="loadFeedbacks()">刷新</button>
@@ -93,6 +159,28 @@
 
             <div id="feedbackList"></div>
             <div class="pagination" id="pagination"></div>
+        </div>
+
+        <!-- Tab 3: User Management -->
+        <div id="section-users" class="admin-section">
+            <div class="user-table-wrap">
+                <table class="user-table">
+                    <thead>
+                        <tr>
+                            <th>用户名</th>
+                            <th>邮箱</th>
+                            <th>注册时间</th>
+                            <th>最后登录</th>
+                            <th>练习次数</th>
+                            <th>平均分</th>
+                            <th>最近练习</th>
+                        </tr>
+                    </thead>
+                    <tbody id="userTableBody">
+                        <tr><td colspan="7" style="text-align:center;padding:32px;color:var(--text-dim);">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 
@@ -103,6 +191,7 @@
 const API = '/api';
 let currentPage = 1;
 let searchTimer;
+let currentTab = 'overview';
 
 function getToken() { return sessionStorage.getItem('fb_admin_token') || ''; }
 
@@ -131,8 +220,7 @@ function initAdminPage() {
     if (saved) {
         document.getElementById('passwordGate').style.display = 'none';
         document.getElementById('dashboard').style.display = 'block';
-        loadStats();
-        loadFeedbacks();
+        loadOverview();
     }
 }
 
@@ -146,21 +234,105 @@ async function login() {
         document.getElementById('passwordGate').style.display = 'none';
         document.getElementById('dashboard').style.display = 'block';
         document.getElementById('loginError').style.display = 'none';
-        loadStats();
-        loadFeedbacks();
+        loadOverview();
     } catch (err) {
         document.getElementById('loginError').style.display = 'block';
     }
 }
 
-async function loadStats() {
+function switchTab(tab) {
+    currentTab = tab;
+    document.querySelectorAll('.admin-tab').forEach((t, i) => {
+        t.classList.toggle('active', t.textContent.includes(
+            tab === 'overview' ? '数据概览' : tab === 'feedbacks' ? '意见收集' : '用户管理'
+        ));
+    });
+    document.querySelectorAll('.admin-section').forEach(s => s.classList.remove('active'));
+    document.getElementById('section-' + tab).classList.add('active');
+
+    if (tab === 'overview') loadOverview();
+    else if (tab === 'feedbacks') { loadFeedbackStats(); loadFeedbacks(); }
+    else if (tab === 'users') loadUsers();
+}
+
+// ═══════════════ Data Overview ═══════════════
+async function loadOverview() {
+    try {
+        const res = await fetch(API + '/admin/overview');
+        const d = await res.json();
+        document.getElementById('overviewStats').innerHTML = `
+            <div class="overview-stat-card">
+                <div class="num">${d.total_users}</div>
+                <div class="label">用户总数</div>
+            </div>
+            <div class="overview-stat-card">
+                <div class="num">${d.today_users}</div>
+                <div class="label">今日新增用户</div>
+            </div>
+            <div class="overview-stat-card">
+                <div class="num">${d.total_sessions}</div>
+                <div class="label">练习总次数</div>
+            </div>
+            <div class="overview-stat-card">
+                <div class="num">${d.today_sessions}</div>
+                <div class="label">今日练习次数</div>
+            </div>
+            <div class="overview-stat-card">
+                <div class="num">${d.avg_score}</div>
+                <div class="label">平均得分</div>
+            </div>
+            <div class="overview-stat-card">
+                <div class="num">${d.total_feedbacks}</div>
+                <div class="label">反馈总数</div>
+            </div>
+        `;
+    } catch (err) { /* ignore */ }
+}
+
+// ═══════════════ User Management ═══════════════
+async function loadUsers() {
+    try {
+        const res = await fetch(API + '/admin/users');
+        const data = await res.json();
+        const tbody = document.getElementById('userTableBody');
+        if (!data.users.length) {
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--text-dim);">暂无用户</td></tr>';
+            return;
+        }
+        tbody.innerHTML = data.users.map(u => {
+            const scoreClass = u.avg_score >= 80 ? 'score-good' : u.avg_score >= 60 ? 'score-avg' : 'score-low';
+            return `
+                <tr>
+                    <td><strong>${esc(u.username)}</strong></td>
+                    <td>${esc(u.email)}</td>
+                    <td>${formatDate(u.created_at)}</td>
+                    <td>${u.last_login ? formatDate(u.last_login) : '<span style="color:var(--text-dim)">-</span>'}</td>
+                    <td>${u.practice_count}</td>
+                    <td><span class="${scoreClass}">${u.avg_score}</span></td>
+                    <td>${u.last_practice ? formatDate(u.last_practice) : '<span style="color:var(--text-dim)">-</span>'}</td>
+                </tr>
+            `;
+        }).join('');
+    } catch (err) {
+        document.getElementById('userTableBody').innerHTML = '<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--danger);">加载失败</td></tr>';
+    }
+}
+
+function formatDate(ts) {
+    if (!ts) return '-';
+    const d = new Date(ts.replace(' ', 'T') + (ts.includes('+') ? '' : '+08:00'));
+    return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+}
+
+// ═══════════════ Feedback Management ═══════════════
+async function loadFeedbackStats() {
     try {
         const res = await fetch(API + '/feedback-stats');
         const s = await res.json();
         document.getElementById('statsGrid').innerHTML = `
             <div class="stat-card"><div class="num">${s.pending}</div><div class="label">待处理</div></div>
-            <div class="stat-card"><div class="num">${s.investigating}</div><div class="label">调查中</div></div>
-            <div class="stat-card"><div class="num">${s.resolved}</div><div class="label">已解决</div></div>
+            <div class="stat-card"><div class="num">${s.investigating}</div><div class="label">处理中</div></div>
+            <div class="stat-card"><div class="num">${s.resolved}</div><div class="label">已回复</div></div>
             <div class="stat-card"><div class="num">${s.today}</div><div class="label">今日新增</div></div>
             <div class="stat-card"><div class="num">${s.total}</div><div class="label">总计</div></div>
         `;
@@ -194,7 +366,9 @@ function renderList(items) {
         container.innerHTML = '<div class="empty"><p>没有匹配的反馈</p></div>';
         return;
     }
-    container.innerHTML = items.map(f => `
+    container.innerHTML = items.map(f => {
+        const displayName = f.username || f.tester_name || '匿名';
+        return `
         <div class="feedback-item" id="fb-${f.id}">
             <div class="feedback-header" onclick="toggleDetail(${f.id})">
                 <span class="expand-icon">▶</span>
@@ -202,7 +376,7 @@ function renderList(items) {
                 <span class="badge badge-${f.severity}">${severityLabel(f.severity)}</span>
                 <span class="title-text">${esc(f.title)}</span>
                 <span class="meta">
-                    <span>${esc(f.tester_name) || '匿名'}</span>
+                    <span>${esc(displayName)}</span>
                     <span class="badge badge-${f.status}">${statusLabel(f.status)}</span>
                     <span>${formatTime(f.created_at)}</span>
                 </span>
@@ -218,7 +392,7 @@ function renderList(items) {
                 </div>
                 ${f.steps_to_reproduce ? `
                 <div class="field">
-                    <div class="field-label">复现步骤</div>
+                    <div class="field-label">补充说明</div>
                     <div style="white-space:pre-wrap">${esc(f.steps_to_reproduce)}</div>
                 </div>` : ''}
                 ${f.screenshot ? `
@@ -236,13 +410,13 @@ function renderList(items) {
                 ${f.admin_note ? `
                 <div class="field">
                     <div class="field-label">处理备注</div>
-                    <div style="white-space:pre-wrap;background:#fffbeb;padding:8px 12px;border-radius:4px;color:#333;">${esc(f.admin_note)}</div>
+                    <div style="white-space:pre-wrap;background:var(--warning-light);padding:8px 12px;border-radius:4px;color:var(--text);">${esc(f.admin_note)}</div>
                 </div>` : ''}
 
                 <div class="admin-actions">
                     ${f.status === 'pending' || f.status === 'investigating' ? `
-                    <button class="btn btn-primary btn-sm" onclick="quickResolve(${f.id})">✅ 处理完成</button>
-                    <button class="btn btn-outline btn-sm" onclick="quickReject(${f.id})">✗ 不修复</button>
+                    <button class="btn btn-primary btn-sm" onclick="quickResolve(${f.id})">处理完成</button>
+                    <button class="btn btn-outline btn-sm" onclick="quickReject(${f.id})">已知悉</button>
                     ` : `
                     <button class="btn btn-outline btn-sm" onclick="quickReopen(${f.id})">重新打开</button>
                     `}
@@ -250,15 +424,15 @@ function renderList(items) {
                     <button class="btn btn-outline btn-sm" onclick="saveNote(${f.id})">仅保存备注</button>
                     <select id="statusSelect-${f.id}" onchange="updateStatus(${f.id})" style="margin-left:auto;">
                         <option value="pending" ${f.status==='pending'?'selected':''}>待处理</option>
-                        <option value="investigating" ${f.status==='investigating'?'selected':''}>调查中</option>
-                        <option value="resolved" ${f.status==='resolved'?'selected':''}>已解决</option>
-                        <option value="wont_fix" ${f.status==='wont_fix'?'selected':''}>不修复</option>
+                        <option value="investigating" ${f.status==='investigating'?'selected':''}>处理中</option>
+                        <option value="resolved" ${f.status==='resolved'?'selected':''}>已回复</option>
+                        <option value="wont_fix" ${f.status==='wont_fix'?'selected':''}>已知悉</option>
                     </select>
                     ${(f.status === 'resolved' || f.status === 'wont_fix') ? `<button class="btn btn-outline btn-sm" onclick="deleteFeedback(${f.id}, '${esc(f.title)}')" style="color:var(--danger);border-color:var(--danger);">删除</button>` : ''}
                 </div>
             </div>
         </div>
-    `).join('');
+    `}).join('');
 }
 
 function toggleDetail(id) {
@@ -275,7 +449,7 @@ async function updateStatus(id) {
         });
         if (!res.ok) throw new Error('Failed');
         toast('状态已更新', 'success');
-        loadStats();
+        loadFeedbackStats();
     } catch (err) {
         toast('更新失败', 'error');
     }
@@ -289,7 +463,7 @@ async function deleteFeedback(id, title) {
         });
         if (!res.ok) throw new Error('Failed');
         toast('已删除', 'success');
-        loadStats();
+        loadFeedbackStats();
         loadFeedbacks(currentPage);
     } catch (err) {
         toast('删除失败', 'error');
@@ -299,24 +473,24 @@ async function deleteFeedback(id, title) {
 async function quickResolve(id) {
     const note = document.getElementById('noteInput-' + id).value;
     await _patchFeedback(id, { status: 'resolved', admin_note: note });
-    toast('已处理 ✓', 'success');
+    toast('已处理', 'success');
     loadFeedbacks(currentPage);
-    loadStats();
+    loadFeedbackStats();
 }
 
 async function quickReject(id) {
     const note = document.getElementById('noteInput-' + id).value;
     await _patchFeedback(id, { status: 'wont_fix', admin_note: note });
-    toast('已标记不修复', 'success');
+    toast('已标记已知悉', 'success');
     loadFeedbacks(currentPage);
-    loadStats();
+    loadFeedbackStats();
 }
 
 async function quickReopen(id) {
     await _patchFeedback(id, { status: 'pending' });
     toast('已重新打开', 'success');
     loadFeedbacks(currentPage);
-    loadStats();
+    loadFeedbackStats();
 }
 
 async function _patchFeedback(id, body) {
@@ -371,12 +545,12 @@ function formatTime(ts) {
 }
 
 function statusLabel(s) {
-    const m = { pending: '待处理', investigating: '调查中', resolved: '已解决', wont_fix: '不修复' };
+    const m = { pending: '待处理', investigating: '处理中', resolved: '已回复', wont_fix: '已知悉' };
     return m[s] || s;
 }
 
 function severityLabel(s) {
-    const m = { critical: '严重', major: '重要', minor: '轻微', cosmetic: '视觉' };
+    const m = { suggestion: '功能建议', confusion: '使用困惑', experience: '体验不佳', other: '其他' };
     return m[s] || s;
 }
 
@@ -388,10 +562,8 @@ function categoryLabel(s) {
 function parseUA(ua) {
     if (!ua) return '未知';
     const parts = [];
-    // Firefox: "Firefox/130.0"
     const ff = ua.match(/Firefox\/([\d.]+)/);
     if (ff) parts.push('Firefox ' + ff[1]);
-    // Chrome: "Chrome/130.0.0.0" (skip if Edge is present)
     const edge = ua.match(/Edg\/([\d.]+)/);
     if (edge) {
         parts.push('Edge ' + edge[1]);
@@ -399,10 +571,8 @@ function parseUA(ua) {
         const chrome = ua.match(/Chrome\/([\d.]+)/);
         if (chrome && !ua.includes('Edg/')) parts.push('Chrome ' + chrome[1]);
     }
-    // Safari
     const safari = ua.match(/Version\/([\d.]+).*Safari\//);
     if (safari && !chrome && !edge) parts.push('Safari ' + safari[1]);
-    // OS
     if (ua.includes('Windows NT')) {
         const win = ua.match(/Windows NT ([\d.]+)/);
         const winMap = {'10.0':'10/11','6.3':'8.1','6.1':'7'};
@@ -414,7 +584,6 @@ function parseUA(ua) {
     } else if (ua.includes('Linux')) {
         parts.push('Linux');
     }
-    // Mobile
     if (ua.includes('Mobile')) parts.push('(移动端)');
     return parts.join(' / ');
 }

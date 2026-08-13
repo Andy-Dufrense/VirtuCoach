@@ -17,6 +17,8 @@ class FeedbackResponse(BaseModel):
     steps_to_reproduce: str
     screenshot: str
     tester_name: str
+    user_id: int | None = None
+    username: str = ""
     browser_info: str
     status: str
     admin_note: str
@@ -24,7 +26,10 @@ class FeedbackResponse(BaseModel):
 
     @classmethod
     def from_row(cls, row):
-        return cls(**dict(row))
+        d = dict(row)
+        d.setdefault("user_id", None)
+        d.setdefault("username", "")
+        return cls(**d)
 
 
 class StatsResponse(BaseModel):

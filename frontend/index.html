@@ -1,536 +1,77 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VirtuCoach - AI 乐器陪练测试</title>
-    <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VirtuCoach - AI 吉他陪练系统</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .landing { text-align:center; padding:60px 20px 40px; }
+    .landing .hero-icon { font-size:64px; margin-bottom:16px; }
+    .landing h1 { font-size:36px; margin:0 0 8px; background:linear-gradient(135deg,var(--primary-light),var(--primary)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .landing .tagline { color:var(--text-dim); font-size:18px; margin-bottom:32px; }
+    .landing .hero-btns { display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin-bottom:48px; }
+    .landing .hero-btns .btn { padding:14px 32px; font-size:16px; border-radius:10px; }
+    .features { display:grid; grid-template-columns:repeat(2, 1fr); gap:16px; max-width:560px; margin:0 auto; }
+    .feature-card { background:var(--card-bg); border:1px solid var(--card-border); border-radius:var(--radius); padding:24px 18px; text-align:center; }
+    .feature-card .ficon { font-size:36px; margin-bottom:10px; }
+    .feature-card h3 { margin:0 0 6px; font-size:16px; }
+    .feature-card p { color:var(--text-dim); font-size:13px; margin:0; }
+    .footer { text-align:center; color:var(--text-dim); font-size:12px; padding:40px 20px; }
+  </style>
 </head>
 <body>
-    <div class="app">
-        <!-- 头部 -->
-        <header class="header">
-            <div class="logo">🎵 VirtuCoach</div>
-            <div class="subtitle">AI 乐器陪练系统 · 测试版</div>
-            <div class="status-badge" id="modelStatus">检查模型中...</div>
-            <button class="btn btn-secondary btn-small" id="refManagerBtn" style="margin-left:auto;">📚 参考图管理</button>
-        </header>
-
-        <main class="main">
-            <!-- 模式切换 -->
-            <div class="mode-switcher" id="modeSwitcher">
-                <button class="mode-btn active" data-mode="video" id="modeVideoBtn">
-                    <span class="mode-icon">🎥</span> 视频分析
-                </button>
-                <button class="mode-btn" data-mode="image" id="modeImageBtn">
-                    <span class="mode-icon">📷</span> 手型检查
-                </button>
-            </div>
-
-            <!-- 上传区 -->
-            <section class="upload-section" id="uploadSection">
-                <!-- 视频模式 -->
-                <div class="upload-mode-panel" id="uploadVideoMode">
-                <div class="upload-box" id="uploadBox">
-                    <div class="upload-icon">🎥</div>
-                    <h2>上传你的演奏视频</h2>
-                    <p class="upload-hint">支持 MP4、MOV、AVI 格式，也支持在线录制</p>
-                    <p class="upload-subhint">手机拍摄即可，请确保左右双手都在镜头内清晰可见</p>
-                    <input type="file" id="videoInput" accept="video/*" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0,0,0,0);pointer-events:none">
-                    <div class="video-action-row">
-                        <button class="btn btn-primary" id="selectBtn">选择视频文件</button>
-                        <span style="color:var(--text-dim);font-size:13px;">或</span>
-                        <button class="btn btn-record" id="startVideoRecordBtn">📷 录制视频</button>
-                        <span class="chord-record-timer" id="videoRecordTimer" style="display:none;">录制中 0s</span>
-                    </div>
-
-                    <!-- 录制预览 -->
-                    <div class="chord-video-preview-wrap" id="videoRecordPreviewWrap" style="display:none;">
-                        <video id="videoRecordPreview" class="chord-video-preview" autoplay playsinline muted style="display:none;"></video>
-                        <div class="chord-video-placeholder" id="videoRecordPlaceholder">
-                            <span>📱 摄像头预览区域</span>
-                        </div>
-                    </div>
-
-                    <!-- 录制完成预览 -->
-                    <div class="chord-video-ready" id="videoRecordReady" style="display:none;">
-                        <p class="upload-subhint">✅ 视频就绪 (最长30秒)，点击下方按钮开始分析</p>
-                        <video id="videoRecordResult" src="" controls style="max-width:360px;max-height:270px;border-radius:10px;"></video>
-                    </div>
-                    
-                    <!-- 选项 -->
-                    <div class="upload-options">
-                        <!-- 仅吉他模式 -->
-                        <input type="hidden" id="instrumentSelect" value="guitar">
-                        <div class="option-group">
-                            <label>你的水平</label>
-                            <select id="levelSelect">
-                                <option value="beginner">🌱 初学者</option>
-                                <option value="intermediate">🌿 中级</option>
-                                <option value="advanced">🌳 高级</option>
-                            </select>
-                        </div>
-                        <div class="option-group">
-                            <label>变调夹 (capo)</label>
-                            <select id="capoSelect" required>
-                                <option value="" disabled selected>请选择变调夹位置</option>
-                                <option value="0">0品 (无变调夹)</option>
-                                <option value="1">1品</option>
-                                <option value="2">2品</option>
-                                <option value="3">3品</option>
-                                <option value="4">4品</option>
-                                <option value="5">5品</option>
-                                <option value="6">6品</option>
-                                <option value="7">7品</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-                </div><!-- /uploadVideoMode -->
-
-                <!-- 和弦手型检查模式 -->
-                <div class="upload-mode-panel" id="uploadImageMode" style="display:none;">
-                <div class="upload-box" id="imageUploadBox">
-                    <div class="upload-icon">🎸</div>
-                    <h2 id="handCheckTitle">检查和弦手型</h2>
-                    <p class="upload-hint" id="handCheckHint">输入你要检查的和弦，上传3-5秒短视频</p>
-
-                    <!-- 子模式切换：和弦检查 / 技巧检查 -->
-                    <div class="hand-submode" id="handSubmode" style="margin-bottom:16px;">
-                        <button class="submode-btn active" id="submodeChordBtn" data-submode="chord">🎯 和弦检查</button>
-                        <button class="submode-btn" id="submodeTechniqueBtn" data-submode="technique">🎸 技巧检查</button>
-                    </div>
-
-                    <!-- 和弦检查区域 -->
-                    <div id="chordCheckArea">
-                    <div class="upload-options">
-                        <div class="option-group" style="width:100%;max-width:400px;">
-                            <label>🎯 输入你要检查的和弦</label>
-                            <input type="text" id="chordInput" list="chordDatalist" autocomplete="off"
-                                   placeholder="输入和弦名称搜索，如 C、Em、G..."
-                                   style="padding:10px 14px;border-radius:10px;border:1px solid var(--card-border);background:var(--bg);color:var(--text);font-size:16px;width:100%;">
-                            <datalist id="chordDatalist"></datalist>
-                            <p style="color:var(--text-dim);font-size:11px;margin-top:4px;">💡 注意区分大小写：<b>C</b> 为大三和弦，<b>Cm</b> 为小三和弦，<b>C</b> ≠ <b>c</b></p>
-                            <p id="chordMatchHint" style="color:var(--warning);font-size:12px;margin-top:4px;display:none;">
-                                ⚠️ 该和弦暂无知识库数据，分析将使用通用手型标准
-                            </p>
-                        </div>
-                    </div>
-                    </div><!-- /chordCheckArea -->
-
-                    <!-- 技巧检查区域 -->
-                    <div id="techniqueCheckArea" style="display:none;">
-                    <div class="upload-options">
-                        <div class="option-group" style="width:100%;max-width:400px;">
-                            <label>🎸 选择你要检查的技巧</label>
-                            <select id="techniqueSelect"
-                                    style="padding:10px 14px;border-radius:10px;border:1px solid var(--card-border);background:var(--bg);color:var(--text);font-size:16px;width:100%;">
-                                <option value="">-- 选择技巧 --</option>
-                                <optgroup label="右手技巧">
-                                    <option value="basic-picking">基础拨弦（右手）</option>
-                                    <option value="strumming">扫弦（右手）</option>
-                                    <option value="chop">切音（右手）</option>
-                                    <option value="pm-technique">PM技巧-打板+扫弦（右手）</option>
-                                    <option value="am-technique">AM技巧-击弦+敲板（右手）</option>
-                                    <option value="rasgueado">轮扫（右手）</option>
-                                    <option value="rest-stroke">靠弦（右手）</option>
-                                    <option value="right-hand-tapping">点弦（右手）</option>
-                                    <option value="right-hand-muting">闷音（右手）</option>
-                                    <option value="slap-harmonic">拍泛音（右手）</option>
-                                    <option value="artificial-harmonics">人工泛音（右手）</option>
-                                    <option value="string-slap">拍弦（右手）</option>
-                                    <option value="arpeggio">琶音（右手）</option>
-                                </optgroup>
-                                <optgroup label="左手技巧">
-                                    <option value="basic-fretting">基本按弦（左手）</option>
-                                    <option value="barre-technique">横按（左手）</option>
-                                    <option value="hammer-on">击弦（左手）</option>
-                                    <option value="pull-off">勾弦（左手）</option>
-                                    <option value="bend">推弦（左手）</option>
-                                    <option value="vibrato">揉弦（左手）</option>
-                                    <option value="slide">滑音（左手）</option>
-                                    <option value="slide-in">无首滑音（左手）</option>
-                                    <option value="slide-out">无尾滑音（左手）</option>
-                                    <option value="natural-harmonics">自然泛音（左手）</option>
-                                    <option value="left-hand-tapping">左手点弦</option>
-                                    <option value="trill">击勾弦（左手）</option>
-                                </optgroup>
-                            </select>
-                            <p id="techniqueMatchHint" style="color:var(--warning);font-size:12px;margin-top:4px;display:none;">
-                                ⚠️ 该技巧暂无知识库数据
-                            </p>
-                        </div>
-                    </div>
-                    <!-- 技巧参考提示 -->
-                    <div class="technique-ref-hint" id="techniqueRefHint" style="display:none;margin-top:8px;padding:10px 14px;background:rgba(0,184,148,0.08);border-radius:8px;font-size:13px;color:var(--text-dim);">
-                        💡 录制时请确保左右双手都在镜头内清晰可见，参考视频可在下方查看
-                    </div>
-                    </div><!-- /techniqueCheckArea -->
-
-                    <!-- 上传为主要方式 -->
-                    <div class="chord-upload-area" id="chordUploadArea" style="display:none;">
-                        <div class="chord-record-instructions" id="chordRecordInstructions">
-                            <p><strong>录制要求：</strong></p>
-                            <ol id="recordInstructionsList">
-                                <li>按好 <b id="chordNameInHint">C</b> 和弦</li>
-                                <li>从低音弦逐根拨到高音弦（如 C：⑤→④→③→②→①）</li>
-                                <li>每根弦尽量弹饱满、发音清晰即可</li>
-                                <li>左手正对或略侧对镜头，保证手指和琴弦清晰可见</li>
-                            </ol>
-                        </div>
-                        <input type="file" id="chordVideoInput" accept="video/*" style="display:none;">
-                        <button class="btn btn-primary" id="uploadChordVideoBtn">📁 上传视频文件</button>
-                        <span style="color:var(--text-dim);font-size:13px;margin:0 8px;">或</span>
-                        <button class="btn btn-record" id="startRecordBtn">📷 录制视频</button>
-                        <span class="chord-record-timer" id="recordTimer" style="display:none;">录制中 0s / 5s</span>
-                    </div>
-
-                    <!-- 录制预览 -->
-                    <div class="chord-video-preview-wrap" id="chordVideoPreviewWrap" style="display:none;">
-                        <video id="chordPreview" class="chord-video-preview" autoplay playsinline muted style="display:none;"></video>
-                        <div class="chord-video-placeholder" id="chordVideoPlaceholder">
-                            <span>📱 摄像头预览区域</span>
-                        </div>
-                    </div>
-
-                    <!-- 已就绪视频预览 -->
-                    <div class="chord-video-ready" id="chordVideoReady" style="display:none;">
-                        <p class="upload-subhint">✅ 视频就绪，点击下方按钮开始分析</p>
-                        <video id="chordVideoResult" src="" controls style="max-width:320px;max-height:240px;border-radius:10px;"></video>
-                    </div>
-
-                    <button class="btn btn-primary" id="analyzeChordBtn" style="display:none;">🔍 分析和弦手型</button>
-                </div>
-                </div><!-- /uploadImageMode -->
-            </section>
-
-            <!-- 进度区 -->
-            <section class="progress-section" id="progressSection" style="display:none;">
-                <div class="progress-card">
-                    <div class="progress-header">
-                        <h3 id="progressTitle">正在分析...</h3>
-                        <span class="progress-status" id="progressStatus">处理中</span>
-                    </div>
-                    <div class="progress-bar-container">
-                        <div class="progress-bar" id="progressBar"></div>
-                    </div>
-                    <p class="progress-message" id="progressMessage">正在提取音频并分析音符...</p>
-                    <div class="progress-timing" id="progressTiming" style="display:none;">
-                        <span>🎵 音频分析: <b id="audioElapsed">--</b></span>
-                        <span>✋ 手型检测: <b id="handElapsed">--</b></span>
-                        <span>🤖 AI评估: <b id="aiElapsed">--</b></span>
-                    </div>
-                    <div class="progress-steps">
-                        <div class="step" id="step1">
-                            <span class="step-icon">📤</span>
-                            <span class="step-text">上传视频</span>
-                            <span class="step-check" id="check1">⌛</span>
-                        </div>
-                        <div class="step" id="step2">
-                            <span class="step-icon">🎵</span>
-                            <span class="step-text">音频分析</span>
-                            <span class="step-check" id="check2">⌛</span>
-                        </div>
-                        <div class="step" id="step3">
-                            <span class="step-icon">✋</span>
-                            <span class="step-text">手型检测</span>
-                            <span class="step-check" id="check3">⌛</span>
-                        </div>
-                        <div class="step" id="step4">
-                            <span class="step-icon">🤖</span>
-                            <span class="step-text">AI 综合评估</span>
-                            <span class="step-check" id="check4">⌛</span>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- 结果区 -->
-            <section class="result-section" id="resultSection" style="display:none;">
-                <!-- 评分总览 -->
-                <div class="score-overview" id="scoreOverview">
-                    <div class="score-card main-score">
-                        <div class="score-number" id="overallScore">0</div>
-                        <div class="score-label">综合评分</div>
-                    </div>
-                    <div class="score-card">
-                        <div class="score-number small" id="pitchScore">0</div>
-                        <div class="score-label">音准</div>
-                    </div>
-                    <div class="score-card">
-                        <div class="score-number small" id="rhythmScore">0</div>
-                        <div class="score-label">节奏</div>
-                    </div>
-                    <div class="score-card">
-                        <div class="score-number small" id="techniqueScore">0</div>
-                        <div class="score-label">手型技术</div>
-                    </div>
-                </div>
-
-                <!-- 摘要 -->
-                <div class="summary-card" id="summaryCard"></div>
-
-                <!-- 检测详情（放前面） -->
-                <div class="error-list-card" id="errorListCard">
-                    <h3>🎯 检测详情</h3>
-                    <div class="severity-legend">
-                        <span class="legend-item"><span class="legend-dot critical"></span> 重要错误</span>
-                        <span class="legend-item"><span class="legend-dot minor"></span> 轻微错误</span>
-                        <span class="legend-item"><span class="legend-dot cosmetic"></span> 小问题</span>
-                    </div>
-                    <div class="tabs">
-                        <button class="tab active" data-tab="audio">🎵 音频问题</button>
-                        <button class="tab" data-tab="hand">✋ 手型问题</button>
-                    </div>
-                    <div class="tab-content" id="audioTab">
-                        <ul id="audioErrorList"></ul>
-                    </div>
-                    <div class="tab-content" id="handTab" style="display:none;">
-                        <ul id="handIssueList"></ul>
-                        <!-- 正确手型对比区 -->
-                        <div class="hand-compare-section" id="handCompareSection" style="display:none;">
-                            <h4>📐 正确手型参考</h4>
-                            <p class="hand-compare-hint">以下是正确手型的参考对比，请对照你的截图检查：</p>
-                            <div class="hand-compare-grid" id="handCompareGrid"></div>
-                        </div>
-                    </div>
-                    <!-- 问题截图 -->
-                    <div class="snapshot-inline" id="snapshotInline" style="display:none;">
-                        <h4>📷 问题截图</h4>
-                        <div class="snapshot-grid" id="snapshotGrid"></div>
-                    </div>
-                </div>
-
-                <!-- AI 老师详细报告（放后面） -->
-                <div class="report-card">
-                    <h3>📋 AI 老师详细报告</h3>
-                    <div class="report-content" id="reportContent"></div>
-                </div>
-
-                <!-- 操作 -->
-                <div class="actions">
-                    <button class="btn btn-secondary" id="newAnalysisBtn">🔄 重新分析</button>
-                    <button class="btn btn-primary" id="copyReportBtn">📋 复制报告</button>
-                </div>
-            </section>
-
-            <!-- 手型图片分析结果区 -->
-            <section class="hand-result-section" id="handResultSection" style="display:none;">
-                <!-- 手型分析进度条 -->
-                <div class="progress-card" id="handProgressCard">
-                    <div class="progress-header">
-                        <h3 id="handProgressTitle">正在分析手型...</h3>
-                    </div>
-                    <div class="progress-bar-container">
-                        <div class="progress-bar" id="handProgressBar" style="width:0%;"></div>
-                    </div>
-                    <p class="progress-message" id="handProgressMessage">准备中...</p>
-                    <div class="progress-steps">
-                        <div class="step active" id="hStep1">
-                            <span class="step-icon">🎞️</span>
-                            <span class="step-text">关键帧提取</span>
-                            <span class="step-check" id="hCheck1">⌛</span>
-                        </div>
-                        <div class="step" id="hStep2">
-                            <span class="step-icon">✋</span>
-                            <span class="step-text">手部关键点检测</span>
-                            <span class="step-check" id="hCheck2">⌛</span>
-                        </div>
-                        <div class="step" id="hStep3">
-                            <span class="step-icon">🔍</span>
-                            <span class="step-text">手型分析对比</span>
-                            <span class="step-check" id="hCheck3">⌛</span>
-                        </div>
-                        <div class="step" id="hStep4">
-                            <span class="step-icon">🤖</span>
-                            <span class="step-text">AI 诊断报告</span>
-                            <span class="step-check" id="hCheck4">⌛</span>
-                        </div>
-                    </div>
-                </div>
-                <!-- 结果卡片 -->
-                <div class="hand-result-card" id="handResultCard" style="display:none;">
-                    <h3>🔍 手型分析结果</h3>
-                    <div class="hand-result-header">
-                        <div class="hand-score-display">
-                            <span class="hand-score-big" id="handScore">--</span>
-                            <span class="hand-score-label">手型评分 /10</span>
-                        </div>
-                        <span class="hand-status-badge" id="handStatusBadge">分析中...</span>
-                    </div>
-                    <div class="side-by-side-compare" id="sideBySideCompare">
-                        <div class="compare-pane user-pane">
-                            <h4>📷 你的手型</h4>
-                            <img id="userHandImage" src="" alt="你的手型">
-                        </div>
-                        <div class="compare-divider"><span>VS</span></div>
-                        <div class="compare-pane ref-pane">
-                            <h4>✅ 正确参考</h4>
-                            <img id="refHandImage" src="" alt="正确手型参考">
-                            <p id="refHandDesc" style="font-size:12px;color:var(--text-dim);margin-top:8px;"></p>
-                        </div>
-                    </div>
-                    <div class="hand-issue-detail-list" id="handIssueDetailList">
-                        <h4>📋 发现的问题</h4>
-                        <div id="handIssueItems"></div>
-                        <p id="noIssuesMsg" style="color:var(--success);display:none;">✅ 手型规范，未发现明显问题！</p>
-                    </div>
-                    <div class="actions">
-                        <button class="btn btn-secondary" id="newHandAnalysisBtn">🔄 重新检查</button>
-                    </div>
-                </div>
-            </section>
-
-            <!-- ====== 参考图管理面板 ====== -->
-            <section class="ref-manager-section" id="refManagerSection" style="display:none;">
-                <div class="ref-manager-header">
-                    <h2>📚 正确手型参考图管理</h2>
-                    <button class="btn btn-secondary" id="refManagerClose">✕ 关闭</button>
-                </div>
-
-                <!-- 上传表单 -->
-                <div class="ref-upload-card">
-                    <h3>上传新的参考图</h3>
-                    <div class="ref-upload-row">
-                        <div class="ref-upload-preview">
-                            <div class="ref-preview-box" id="refPreviewBox">
-                                <span>🖼️</span>
-                                <p>选择图片</p>
-                            </div>
-                            <input type="file" id="refImageInput" accept="image/*" style="display:none;">
-                            <button class="btn btn-secondary" id="refSelectBtn">选择图片</button>
-                            <button class="btn btn-primary" id="refAnalyzeBtn" disabled>🤖 AI 分析</button>
-                        </div>
-                        <div class="ref-upload-form" id="refFormFields">
-                            <div class="form-row">
-                                <label>手</label>
-                                <select id="refHand"><option value="左手">左手</option><option value="右手">右手</option><option value="双手">双手</option></select>
-                            </div>
-                            <div class="form-row">
-                                <label>技巧</label>
-                                <select id="refTechnique">
-                                    <option value="basic_fretting">基本按弦</option>
-                                    <option value="natural_harmonics">自然泛音</option>
-                                    <option value="artificial_harmonics">人工泛音</option>
-                                    <option value="pm">PM闷音</option>
-                                    <option value="am">AM指弹</option>
-                                    <option value="tapping">点弦</option>
-                                    <option value="muting">左手闷音</option>
-                                    <option value="bend">推弦</option>
-                                    <option value="slide">滑音</option>
-                                    <option value="vibrato">揉弦</option>
-                                    <option value="hammer_on">击弦</option>
-                                    <option value="pull_off">勾弦</option>
-                                </select>
-                            </div>
-                            <div class="form-row">
-                                <label>部位</label>
-                                <select id="refBodyPart">
-                                    <option value="full_hand">全手</option>
-                                    <option value="wrist">手腕</option>
-                                    <option value="thumb">拇指</option>
-                                    <option value="index_finger">食指</option>
-                                    <option value="middle_finger">中指</option>
-                                    <option value="ring_finger">无名指</option>
-                                    <option value="pinky">小指</option>
-                                </select>
-                            </div>
-                            <div class="form-row">
-                                <label>视角</label>
-                                <select id="refView"><option value="前">正面</option><option value="侧">侧面</option><option value="上">上方</option></select>
-                            </div>
-                            <div class="form-row" style="grid-column:1/-1;">
-                                <label>描述</label>
-                                <input type="text" id="refDescription" placeholder="描述这个正确手型的要点">
-                            </div>
-                            <div class="form-row" style="grid-column:1/-1;">
-                                <label>标签（逗号分隔）</label>
-                                <input type="text" id="refTags" placeholder="如: 按弦,手指立起,指尖">
-                            </div>
-                            <div style="grid-column:1/-1;text-align:right;">
-                                <button class="btn btn-primary" id="refSaveBtn" disabled>💾 保存参考图</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 已有参考图列表 -->
-                <div class="ref-gallery-card">
-                    <h3>已有参考图 <span id="refCount" style="color:var(--text-dim);font-size:14px;">(加载中...)</span></h3>
-                    <div class="ref-gallery-grid" id="refGalleryGrid"></div>
-                </div>
-            </section>
-
-        </main>
-
-        <!-- Feedback Widget -->
-        <button class="feedback-fab" id="feedbackFab" title="提交反馈">💬</button>
-
-        <div class="feedback-modal-overlay" id="feedbackModal">
-            <div class="feedback-modal">
-                <div class="feedback-modal-header">
-                    <h3>提交反馈</h3>
-                    <button class="feedback-modal-close" id="feedbackClose">&times;</button>
-                </div>
-                <form id="feedbackForm" enctype="multipart/form-data">
-                    <input type="hidden" name="project" value="VirtuCoach">
-                    <div class="fb-row">
-                        <div class="fb-group">
-                            <label>问题出在什么模块 *</label>
-                            <select name="category" required>
-                                <option value="">请选择</option>
-                                <option value="video_analysis">视频分析</option>
-                                <option value="hand_check">手型检查</option>
-                            </select>
-                        </div>
-                        <div class="fb-group">
-                            <label>严重程度 *</label>
-                            <select name="severity" required>
-                                <option value="">请选择</option>
-                                <option value="critical">Critical - 完全不可用</option>
-                                <option value="major">Major - 主要功能受阻</option>
-                                <option value="minor">Minor - 轻微影响</option>
-                                <option value="cosmetic">Cosmetic - 仅视觉</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="fb-group">
-                        <label>问题标题 *</label>
-                        <input type="text" name="title" required placeholder="用一句话概括问题">
-                    </div>
-                    <div class="fb-group">
-                        <label>详细描述 <span style="color:var(--text-dim);font-weight:400;font-size:0.8rem">(可选)</span></label>
-                        <textarea name="description" placeholder="描述你遇到的问题：实际看到了什么？期望应该看到什么？"></textarea>
-                    </div>
-                    <div class="fb-group">
-                        <label>复现步骤 <span style="color:var(--text-dim);font-weight:400;font-size:0.8rem">(可选)</span></label>
-                        <textarea name="steps_to_reproduce" placeholder="1. 打开页面 XXX&#10;2. 点击 XXX&#10;3. 观察到 XXX" style="min-height:70px"></textarea>
-                    </div>
-                    <div class="fb-group">
-                        <label>截图（可选，支持拖拽/粘贴）</label>
-                        <div class="fb-drop-zone" id="fbDropZone">
-                            <p>点击上传、拖拽或 <strong>Ctrl+V 粘贴</strong>（最大 10MB）</p>
-                            <input type="file" name="screenshot" accept="image/*" style="display:none" id="fbFileInput">
-                        </div>
-                        <div id="fbScreenshotPreview"></div>
-                    </div>
-                    <div class="fb-group">
-                        <label>你的名字（可选）</label>
-                        <input type="text" name="tester_name" placeholder="方便后续沟通">
-                    </div>
-                    <button type="submit" class="btn btn-primary" style="width:100%;padding:12px;font-size:1rem;">提交反馈</button>
-                </form>
-            </div>
-        </div>
-
-        <!-- Toast -->
-        <div class="toast" id="toast"></div>
+  <div class="app">
+    <div class="landing">
+      <div class="hero-icon">🎸</div>
+      <h1>VirtuCoach</h1>
+      <p class="tagline">AI 驱动的吉他陪练系统 — 上传演奏视频，获得专业分析报告</p>
+      <div class="hero-btns" id="heroBtns">
+        <button class="btn btn-primary" onclick="window.location.href='/login.html'">登 录</button>
+        <button class="btn btn-secondary" onclick="window.location.href='/register.html'">注 册</button>
+        <button class="btn btn-secondary" onclick="window.location.href='/analysis.html'">游客体验</button>
+      </div>
     </div>
 
-    <script src="js/hand-check.js?v=12"></script>
-    <script src="js/reference-manager.js?v=12"></script>
-    <script src="app.js?v=12"></script>
+    <div class="features">
+      <div class="feature-card">
+        <div class="ficon">🎵</div>
+        <h3>音频分析</h3>
+        <p>音准检测、节奏评估、和弦识别，精准定位每个音符的问题</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon">✋</div>
+        <h3>手型检测</h3>
+        <p>MediaPipe手部关键点 + AI视觉分析，纠正错误按弦姿势</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon">🤖</div>
+        <h3>AI 报告</h3>
+        <p>DeepSeek生成个性化练习建议，针对性改善演奏技巧</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon">📈</div>
+        <h3>进步追踪</h3>
+        <p>记录每次练习数据，可视化进步曲线，见证成长</p>
+      </div>
+    </div>
+
+    <div class="footer">
+      VirtuCoach &copy; 2026 · AI Guitar Practice Coach
+    </div>
+
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <script src="js/auth.js"></script>
+  <script>
+    (function () {
+      if (VirtuCoach.isLoggedIn()) {
+        document.getElementById("heroBtns").innerHTML =
+          '<button class="btn btn-primary" onclick="window.location.href=\'/dashboard.html\'" style="padding:14px 32px;font-size:16px;">进入控制台</button>' +
+          '<button class="btn btn-secondary" onclick="window.location.href=\'/analysis.html\'" style="padding:14px 32px;font-size:16px;">开始练习</button>';
+      }
+    })();
+  </script>
 </body>
 </html>
-
-

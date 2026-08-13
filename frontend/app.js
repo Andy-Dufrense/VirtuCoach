@@ -5,6 +5,13 @@
 const API_BASE = window.location.origin;
 const POLL_INTERVAL = 1500; // 1.5秒轮询一次，更流畅
 
+function getAuthHeaders() {
+    if (window.VirtuCoach && window.VirtuCoach.getAuthHeaders) {
+        return window.VirtuCoach.getAuthHeaders();
+    }
+    return {};
+}
+
 let currentTaskId = null;
 let pollTimer = null;
 
@@ -217,7 +224,7 @@ function setupEventListeners() {
 // ========== 模型状态检查 ==========
 async function checkModelStatus() {
     try {
-        const resp = await fetch(`${API_BASE}/api/models/status`);
+        const resp = await fetch(`${API_BASE}/api/models/status`, { headers: getAuthHeaders() });
         const data = await resp.json();
         const bpOk = data.basic_pitch;
         const mpOk = data.mediapipe_hands;
@@ -292,6 +299,7 @@ async function uploadVideo(file) {
     try {
         const resp = await fetch(`${API_BASE}/api/analyze`, {
             method: "POST",
+            headers: getAuthHeaders(),
             body: formData,
         });
         if (!resp.ok) throw new Error(`上传失败: ${resp.status}`);
@@ -315,7 +323,7 @@ function startPolling(taskId) {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(async () => {
         try {
-            const resp = await fetch(`${API_BASE}/api/task/${taskId}`);
+            const resp = await fetch(`${API_BASE}/api/task/${taskId}`, { headers: getAuthHeaders() });
             const data = await resp.json();
 
             const p = data.progress || 0;
@@ -484,7 +492,7 @@ function showResult(data) {
     var contentType = result.content_type || "";
     var contentTypeNote = "";
     if (contentType === "melody") {
-        contentTypeNote = '<li style="border-left-color:var(--primary);background:rgba(9,132,227,0.05);">🎵 检测到<b>单音旋律</b>，已自动跳过和弦识别分析（和弦识别仅适用于同时弹奏多音的场景）</li>';
+        contentTypeNote = '<li style="border-left-color:var(--primary);background:var(--primary-glow);">🎵 检测到<b>单音旋律</b>，已自动跳过和弦识别分析（和弦识别仅适用于同时弹奏多音的场景）</li>';
     }
 
     if (audioStatus === "nSound") {
@@ -739,72 +747,161 @@ function renderHandCompare(realIssues, referenceImages) {
 }// ========== 追问 Agent ==========
 let resultCache = null;
 
+// ═══════════════════════════════════════════
+// AI Chat — 侧栏精灵 + 划词提问
+// ═══════════════════════════════════════════
+
 function renderChatPanel() {
-    const existing = document.getElementById("chatCard");
-    if (existing) existing.remove();
+    var existingToggle = document.getElementById("chatSidebarToggle");
+    if (existingToggle) existingToggle.remove();
+    var existingPanel = document.getElementById("chatPanelOverlay");
+    if (existingPanel) existingPanel.remove();
+    var existingPopup = document.getElementById("askAiPopup");
+    if (existingPopup) existingPopup.remove();
 
-    const chatHtml = `
-        <div class="chat-card" id="chatCard">
-            <div class="chat-header">
-                <h3>💬 追问 AI 老师</h3>
-            </div>
-            <div class="chat-messages" id="chatMessages">
-                <div class="chat-msg ai">
-                    <div class="msg-bubble">你好！对报告有什么想问的吗？</div>
-                </div>
-            </div>
-            <div class="chat-input-area">
-                <input type="text" id="chatInput" placeholder="输入你的问题..." class="chat-input">
-                <button id="chatSend" class="btn btn-primary btn-small">发送</button>
-            </div>
-        </div>
-    `;
-    document.querySelector('.actions').insertAdjacentHTML('afterend', chatHtml);
+    // 右侧精灵按钮
+    var toggle = document.createElement("button");
+    toggle.id = "chatSidebarToggle";
+    toggle.className = "chat-sidebar-toggle";
+    toggle.innerHTML = 'AI助手<span class="sparkle">✨</span>';
+    toggle.title = "点击打开 AI 助手";
+    document.body.appendChild(toggle);
 
-    document.getElementById('chatSend').addEventListener('click', sendQuestion);
-    document.getElementById('chatInput').addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') sendQuestion();
+    // 滑出面板
+    var overlay = document.createElement("div");
+    overlay.id = "chatPanelOverlay";
+    overlay.className = "chat-panel-overlay";
+    overlay.innerHTML =
+        '<div class="chat-panel">' +
+        '<div class="chat-panel-header">' +
+        '<h3>🤖 AI 吉他教练</h3>' +
+        '<button class="chat-panel-close" id="chatPanelClose">✕</button>' +
+        '</div>' +
+        '<div class="chat-panel-messages" id="chatPanelMessages">' +
+        '<div class="msg-bubble ai">你好！我是你的 AI 吉他教练 🎸<br>对练习报告有任何疑问，或者想了解如何改进，随时问我！<br><br>💡 <b>小技巧：在报告中选中文字，可以快速提问哦</b></div>' +
+        '</div>' +
+        '<div class="chat-panel-input-area">' +
+        '<input type="text" id="chatPanelInput" placeholder="输入你的问题...">' +
+        '<button class="btn btn-primary btn-small" id="chatPanelSend">发送</button>' +
+        '</div>' +
+        '</div>';
+    document.body.appendChild(overlay);
+
+    // 划词提问弹窗
+    var popup = document.createElement("button");
+    popup.id = "askAiPopup";
+    popup.className = "ask-ai-popup";
+    popup.textContent = "✨ 问 AI";
+    document.body.appendChild(popup);
+
+    // 事件绑定
+    bindChatEvents(toggle, overlay, popup);
+}
+
+function bindChatEvents(toggle, overlay, popup) {
+    toggle.addEventListener("click", function () {
+        overlay.classList.add("active");
+        document.getElementById("chatPanelInput").focus();
+    });
+    document.getElementById("chatPanelClose").addEventListener("click", function () {
+        overlay.classList.remove("active");
+    });
+    overlay.addEventListener("click", function (e) {
+        if (e.target === overlay) overlay.classList.remove("active");
+    });
+    document.getElementById("chatPanelSend").addEventListener("click", sendQuestion);
+    document.getElementById("chatPanelInput").addEventListener("keydown", function (e) {
+        if (e.key === "Enter") sendQuestion();
+    });
+    document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape" && overlay.classList.contains("active")) {
+            overlay.classList.remove("active");
+        }
+    });
+
+    // 划词提问：在报告和检测详情区域监听选中
+    setupTextSelection(popup, overlay);
+}
+
+function setupTextSelection(popup, overlay) {
+    var selContainers = document.querySelectorAll(".report-content, .summary-card, #handIssueItems, #audioErrorList");
+    selContainers.forEach(function (container) {
+        if (!container) return;
+        container.addEventListener("mouseup", function (e) {
+            setTimeout(function () {
+                var sel = window.getSelection();
+                var text = (sel && sel.toString().trim()) || "";
+                if (text.length > 2 && text.length < 500) {
+                    var range = sel.getRangeAt(0);
+                    var rect = range.getBoundingClientRect();
+                    popup.style.left = (rect.left + rect.width / 2 - 40) + "px";
+                    popup.style.top = (rect.bottom + window.scrollY + 8) + "px";
+                    popup.style.display = "block";
+                    popup._selectedText = text;
+                } else {
+                    popup.style.display = "none";
+                }
+            }, 10);
+        });
+    });
+
+    // 点击文档其他地方隐藏弹窗
+    document.addEventListener("mousedown", function (e) {
+        if (e.target !== popup && popup.style.display === "block") {
+            popup.style.display = "none";
+        }
+    });
+
+    // 点击弹窗发送选中文字
+    popup.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var text = popup._selectedText || "";
+        popup.style.display = "none";
+        if (text) {
+            overlay.classList.add("active");
+            var input = document.getElementById("chatPanelInput");
+            input.value = "关于报告中「" + text.substring(0, 80) + (text.length > 80 ? "…" : "") + "」这部分，能帮我分析一下吗？";
+            input.focus();
+        }
     });
 }
 
 function showChatPanel() {
-    const el = document.getElementById("chatCard");
-    if (el) el.style.display = "block";
+    var toggle = document.getElementById("chatSidebarToggle");
+    if (toggle) toggle.style.display = "";
 }
 
 async function sendQuestion() {
-    const input = document.getElementById('chatInput');
+    const input = document.getElementById('chatPanelInput');
     const question = input.value.trim();
     if (!question) return;
 
-    const msgs = document.getElementById('chatMessages');
-    msgs.innerHTML += `<div class="chat-msg user"><div class="msg-bubble">${escapeHtml(question)}</div></div>`;
+    const msgs = document.getElementById('chatPanelMessages');
+    msgs.innerHTML += `<div class="msg-bubble user">${escapeHtml(question)}</div>`;
     input.value = '';
     msgs.scrollTop = msgs.scrollHeight;
 
-    document.getElementById('chatSend').disabled = true;
-    // 创建流式消息气泡，用于逐字追加内容
+    document.getElementById('chatPanelSend').disabled = true;
     const streamId = 'streamMsg_' + Date.now();
-    msgs.innerHTML += `<div class="chat-msg ai" id="${streamId}"><div class="msg-bubble"></div></div>`;
+    msgs.innerHTML += `<div class="msg-bubble ai" id="${streamId}"></div>`;
 
     const result = window.currentResult || {};
     try {
         const resp = await fetch(`${API_BASE}/api/ask/stream`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ task_id: window.currentTaskId, question, context: result })
         });
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
         let fullText = '';
         let buffer = '';
-        const bubble = document.querySelector(`#${streamId} .msg-bubble`);
+        const bubble = document.getElementById(streamId);
 
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
-            // 解析 SSE 事件
             const lines = buffer.split('\n');
             buffer = '';
             for (const line of lines) {
@@ -817,7 +914,6 @@ async function sendQuestion() {
                             msgs.scrollTop = msgs.scrollHeight;
                         }
                     } catch (e) {
-                        // 不完整的 JSON，放回 buffer
                         buffer = line + '\n';
                     }
                 }
@@ -826,12 +922,12 @@ async function sendQuestion() {
         if (fullText) {
             bubble.innerHTML = renderMarkdown(fullText);
         } else {
-            bubble.innerHTML = renderMarkdown('抱歉，老师暂时无法回答。');
+            bubble.innerHTML = '抱歉，老师暂时无法回答。';
         }
     } catch (e) {
-        document.getElementById(streamId).querySelector('.msg-bubble').innerHTML = '⚠️ 网络开小差了，稍后再问吧！';
+        document.getElementById(streamId).innerHTML = '⚠️ 网络开小差了，稍后再问吧！';
     } finally {
-        document.getElementById('chatSend').disabled = false;
+        document.getElementById('chatPanelSend').disabled = false;
         msgs.scrollTop = msgs.scrollHeight;
     }
 }
@@ -1143,7 +1239,7 @@ function showToast(message, type = "") {
         fd.set('browser_info', navigator.userAgent);
 
         try {
-            const res = await fetch('/api/feedbacks', { method: 'POST', body: fd });
+            const res = await fetch('/api/feedbacks', { method: 'POST', headers: getAuthHeaders(), body: fd });
             if (!res.ok) {
                 const err = await res.json();
                 throw new Error(err.detail || '提交失败');

@@ -43,14 +43,19 @@ MAX_BONUS_KEYFRAMES = 80      # 错误+技巧附加上限
 MAX_TOTAL_KEYFRAMES = 250     # 绝对安全上限
 ERROR_FRAME_WINDOW = 0.5
 
+# ---- JWT ----
+JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", os.urandom(32).hex())
+JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
+JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "24"))
+
 # ---- server ----
 HOST = os.environ.get("VIRTUCOACH_HOST", "0.0.0.0")
-PORT = int(os.environ.get("VIRTUCOACH_PORT", "7160"))
+PORT = int(os.environ.get("VIRTUCOACH_PORT", "1218"))
 
 # ---- CORS ----
 # Comma-separated list of allowed origins. Defaults to localhost for dev.
 # Set VIRTUCOACH_CORS_ORIGINS="*" to allow all (dev only).
-_cors_raw = os.environ.get("VIRTUCOACH_CORS_ORIGINS", "http://localhost:7160,http://localhost:3000")
+_cors_raw = os.environ.get("VIRTUCOACH_CORS_ORIGINS", "http://localhost:1218,http://localhost:3000")
 CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
 
 

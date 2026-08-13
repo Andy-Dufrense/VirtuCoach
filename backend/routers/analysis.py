@@ -5,8 +5,10 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException, Depends
 from fastapi.responses import FileResponse, JSONResponse
+
+from auth_deps import get_current_user
 
 router = APIRouter(prefix="/api", tags=["analysis"])
 
@@ -64,6 +66,7 @@ def create_analysis_router(analysis_service, upload_dir, frontend_dir):
         level: str = Form("beginner"),
         title: Optional[str] = Form(None),
         capo: int = Form(0),
+        current_user=Depends(get_current_user),
     ):
         task_id = str(uuid.uuid4())
         file_ext = Path(file.filename).suffix if file.filename else ".mp4"
@@ -87,6 +90,7 @@ def create_analysis_router(analysis_service, upload_dir, frontend_dir):
             "title": title or os.path.splitext(file.filename or "untitled")[0],
             "created_at": __import__("datetime").datetime.now().isoformat(),
             "result": None,
+            "user_id": current_user.id if current_user else None,
         }
 
         background_tasks.add_task(

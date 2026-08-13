@@ -18,13 +18,8 @@ function initRefManager() {
 
     if (!toggleBtn) return;
 
-    // 只对管理员显示按钮（URL 带 ?admin 参数）
-    var isAdmin = window.location.search.indexOf("admin") >= 0;
-    if (isAdmin) {
-        toggleBtn.style.display = "";
-    } else {
-        toggleBtn.style.display = "none";
-    }
+    // 参考图管理按钮始终可见
+    toggleBtn.style.display = "";
 
     toggleBtn.addEventListener("click", function() {
         if (panel.style.display === "none" || !panel.style.display) {

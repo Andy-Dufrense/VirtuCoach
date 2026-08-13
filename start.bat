@@ -1,25 +1,25 @@
 @echo off
-title VirtuCoach
+title VirtuCoach-Graduate
 set PYTHONIOENCODING=utf-8
 set HF_HUB_OFFLINE=1
 set HF_ENDPOINT=https://hf-mirror.com
-set PYTHONPATH=E:\VirtuCoach-Lib;%PYTHONPATH%
-cd /d E:\VirtuCoach
+set PYTHONPATH=F:\VirtuCoach-Graduate\VirtuCoach-Lib;%PYTHONPATH%
+cd /d F:\VirtuCoach-Graduate
 
 echo.
 echo   ==========================================
-echo     VirtuCoach  -  AI Guitar Coach
+echo     VirtuCoach-Graduate  -  AI Guitar Coach
 echo   ==========================================
 echo.
-echo   [*] Starting backend on port 7160 ...
+echo   [*] Starting backend on port 1218 ...
 echo.
 
-start "VirtuCoachBackend" /B E:\python.exe run.py
+start "VirtuCoachGraduate" /B python run.py
 
 echo   [*] Waiting for backend to be ready...
 set RETRY=0
 :waitloop
-curl -s -o NUL http://localhost:7160/api/models/status 2>NUL
+curl -s -o NUL http://localhost:1218/api/models/status 2>NUL
 if %errorlevel% equ 0 goto ready
 set /a RETRY+=1
 if %RETRY% geq 60 (
@@ -34,7 +34,7 @@ goto waitloop
 echo.
 echo   ==========================================
 echo     [OK] Backend is ready!
-echo     Open: http://localhost:7160
+echo     Open: http://localhost:1218
 echo   ==========================================
 echo.
 echo   Press any key to stop the server...

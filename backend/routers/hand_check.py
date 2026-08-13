@@ -2,8 +2,10 @@
 import os
 import uuid
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
+
+from auth_deps import get_current_user
 
 router = APIRouter(prefix="/api", tags=["hand_check"])
 
@@ -11,7 +13,7 @@ CHORDS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
                           "..", "knowledge", "chords")
 
 
-def create_hand_check_router(hand_check_service, upload_dir):
+def create_hand_check_router(hand_check_service, upload_dir, practice_db_getter=None):
     """工厂函数"""
 
     @router.post("/check-chord")
@@ -21,6 +23,7 @@ def create_hand_check_router(hand_check_service, upload_dir):
         instrument: str = Form("guitar"),
         mode: str = Form("chord"),
         technique: str = Form(""),
+        current_user=Depends(get_current_user),
     ):
         ext = os.path.splitext(video.filename or ".webm")[1].lower()
         if ext not in (".mp4", ".mov", ".webm", ".avi", ".mkv"):
@@ -37,6 +40,29 @@ def create_hand_check_router(hand_check_service, upload_dir):
             f.write(content)
 
         result = hand_check_service.check(video_path, chord, instrument, mode, technique)
+
+        if current_user and practice_db_getter:
+            try:
+                conn = practice_db_getter()
+                conn.execute(
+                    """INSERT INTO practice_sessions
+                       (user_id, video_filename, instrument, skill_level,
+                        chord_or_track, overall_score, audio_score, hand_score,
+                        report_text, mode)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [current_user.id, video_filename, instrument, "beginner",
+                     chord or technique,
+                     result.get("overall_score", 0) or result.get("overall_hand_score", 0),
+                     0,
+                     result.get("score", 0) or result.get("hand_score", 0),
+                     str(result.get("analysis", "")),
+                     f"chord_check" if mode == "chord" else "technique_check"],
+                )
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+
         return result
 
     @router.get("/chords")
@@ -80,6 +106,7 @@ def create_hand_check_router(hand_check_service, upload_dir):
         image: UploadFile = File(...),
         instrument: str = Form("guitar"),
         check_area: str = Form(""),
+        current_user=Depends(get_current_user),
     ):
         ext = os.path.splitext(image.filename or ".jpg")[1].lower()
         if ext not in (".jpg", ".jpeg", ".png"):
@@ -136,7 +163,7 @@ def create_hand_check_router(hand_check_service, upload_dir):
             check_area=check_area,
         )
 
-        return {
+        response = {
             "success": result.get("success", False),
             "user_image_url": f"/uploads/{image_filename}",
             "hands_detected": result.get("hands_detected", False),
@@ -146,5 +173,26 @@ def create_hand_check_router(hand_check_service, upload_dir):
             "reference_images": reference_images_data,
             "provider": result.get("provider", ""),
         }
+
+        if current_user and practice_db_getter:
+            try:
+                conn = practice_db_getter()
+                conn.execute(
+                    """INSERT INTO practice_sessions
+                       (user_id, video_filename, instrument, skill_level,
+                        chord_or_track, overall_score, audio_score, hand_score,
+                        report_text, mode)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [current_user.id, image_filename, instrument, "beginner",
+                     check_area or "手型检查",
+                     response["overall_score"], 0, response["overall_score"],
+                     "", "image_check"],
+                )
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+
+        return response
 
     return router
