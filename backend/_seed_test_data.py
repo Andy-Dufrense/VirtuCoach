@@ -32,7 +32,8 @@ def fmt(dt: datetime) -> str:
     return dt.strftime(FMT)
 
 
-# (用户名, 注册距今天数, 活跃度档位)
+# (用户名, 注册距今天数, 活跃度档位) —— 共49个测试账号(+真实账号Andy=50用户)
+# 档位设计目标：意愿分档 高≈6 / 中≈29 / 低≈15，中等意愿占主体
 USERS = [
     ("琴弦少年", 52, "heavy"), ("指弹大叔", 48, "heavy"), ("和弦控", 44, "heavy"),
     ("民谣小白", 38, "mid"), ("夜曲练习生", 33, "mid"), ("吉他女神", 27, "mid"),
@@ -40,17 +41,37 @@ USERS = [
     ("初学小哥", 24, "light"), ("业余爱好者", 18, "light"), ("弹琴的猫", 12, "light"),
     ("隔壁小刚", 8, "light"), ("慢热学员", 5, "light"),
     ("路过看看", 14, "dormant"), ("注册试试", 9, "dormant"), ("三分钟热度", 3, "dormant"),
+    # ── 第二批（扩到50用户）──
+    ("吉他老炮", 58, "near_high"), ("琴房常客", 50, "near_high"), ("练琴狂人", 44, "near_high"),
+    ("节奏控", 42, "mid_core"), ("和声迷", 39, "mid_core"), ("弹唱青年", 35, "mid_core"),
+    ("木箱琴声", 31, "mid_core"), ("深夜琴房", 28, "mid_core"), ("弦上漫步", 26, "mid_core"),
+    ("慢练派", 24, "mid_core"), ("爬格子选手", 22, "mid_core"), ("琴弦暖男", 20, "mid_core"),
+    ("扫弦青年", 18, "mid_core"), ("左手茧子", 17, "mid_core"), ("右手节奏", 16, "mid_core"),
+    ("民谣小站", 15, "mid_core"), ("琴房邻居", 14, "mid_core"), ("晚风琴声", 13, "mid_core"),
+    ("半音阶", 12, "mid_core"), ("调弦师", 11, "mid_core"), ("变调夹", 10, "mid_core"),
+    ("随便看看", 19, "mid_low"), ("新手上路", 17, "mid_low"), ("偶尔练琴", 15, "mid_low"),
+    ("琴弦吃灰", 13, "mid_low"), ("三天打鱼", 11, "mid_low"), ("佛系学员", 9, "mid_low"),
+    ("摸鱼乐手", 8, "mid_low"), ("随缘练习", 7, "casual"), ("琴在角落", 6, "casual"),
+    ("初来乍到", 5, "casual"), ("试水玩家", 4, "casual"), ("路过学琴", 3, "casual"),
 ]
 
 PROFILES = {
-    "heavy":   dict(logins=(20, 26), practices=(10, 16), active=(25000, 60000), score=(70, 95),
-                    levels=("intermediate", "advanced")),
-    "mid":     dict(logins=(8, 14),  practices=(4, 8),   active=(6000, 18000),  score=(55, 85),
-                    levels=("beginner", "intermediate")),
-    "light":   dict(logins=(2, 5),   practices=(0, 2),   active=(500, 4000),    score=(40, 75),
-                    levels=("beginner",)),
-    "dormant": dict(logins=(0, 1),   practices=(0, 0),   active=(0, 300),       score=None,
-                    levels=("beginner",)),
+    "heavy":     dict(logins=(20, 26), practices=(10, 16), active=(25000, 60000), score=(70, 95),
+                      levels=("intermediate", "advanced"), feedback=(1, 1)),
+    "near_high": dict(logins=(27, 32), practices=(12, 15), active=(42000, 58000), score=(75, 95),
+                      levels=("intermediate", "advanced"), feedback=(1, 1)),
+    "mid":       dict(logins=(12, 18), practices=(6, 9),   active=(10000, 20000), score=(55, 85),
+                      levels=("beginner", "intermediate"), feedback=(1, 1)),
+    "mid_core":  dict(logins=(16, 24), practices=(7, 11),  active=(16000, 32000), score=(55, 85),
+                      levels=("beginner", "intermediate"), feedback=(1, 1)),
+    "mid_low":   dict(logins=(13, 19), practices=(5, 8),   active=(10000, 18000), score=(45, 80),
+                      levels=("beginner",), feedback=(1, 1)),
+    "light":     dict(logins=(2, 5),   practices=(0, 2),   active=(500, 4000),    score=(40, 75),
+                      levels=("beginner",), feedback=(0, 0)),
+    "casual":    dict(logins=(2, 8),   practices=(0, 3),   active=(500, 8000),    score=(40, 75),
+                      levels=("beginner",), feedback=(0, 0)),
+    "dormant":   dict(logins=(0, 1),   practices=(0, 0),   active=(0, 300),       score=None,
+                      levels=("beginner",), feedback=(0, 0)),
 }
 
 CHORDS = ["C和弦", "G和弦", "Am和弦", "Em和弦", "F和弦", "Dm和弦", "Bm和弦"]
@@ -124,6 +145,7 @@ def seed():
 
     stats = []
     feedback_users = []
+    online_quota = 3  # 前几个高活跃用户设为"当前在线"
     for i, (name, reg_ago, tier) in enumerate(USERS, start=1):
         prof = PROFILES[tier]
         email = f"test{i:02d}@{DOMAIN}"
@@ -140,7 +162,8 @@ def seed():
         n_logins = random.randint(*prof["logins"])
         login_times = []
         if n_logins:
-            days = pick_login_days(min(n_logins, 26), force_today=(tier in ("heavy", "mid") and random.random() < 0.6))
+            force = tier in ("heavy", "near_high", "mid", "mid_core", "mid_low") and random.random() < 0.6
+            days = pick_login_days(min(n_logins, 26), force_today=force)
             for age in days:
                 for _ in range(random.randint(1, 2)):
                     if len(login_times) < n_logins or random.random() < 0.3:
@@ -150,10 +173,11 @@ def seed():
                 uc.execute("INSERT INTO login_events (user_id, login_at) VALUES (?,?)", [uid, fmt(t)])
             uc.execute("UPDATE users SET last_login = ? WHERE id = ?", [fmt(login_times[-1]), uid])
 
-        # 最近活跃：两个重度用户设为"刚刚在线"，其余=最后登录时间
-        if tier == "heavy" and i <= 2:
+        # 最近活跃：前几个高活跃用户设为"刚刚在线"，其余=最后登录时间
+        if online_quota and tier in ("heavy", "near_high"):
             uc.execute("UPDATE users SET last_activity = ? WHERE id = ?",
                        [fmt(NOW - timedelta(seconds=random.randint(120, 900))), uid])
+            online_quota -= 1
         elif login_times:
             uc.execute("UPDATE users SET last_activity = ? WHERE id = ?", [fmt(login_times[-1]), uid])
 
@@ -184,33 +208,39 @@ def seed():
                      random.choice(prof["levels"]), target, overall, audio, hand,
                      "", mode, fmt(t + timedelta(minutes=random.randint(5, 60)))],
                 )
-        if tier in ("heavy", "mid"):
-            feedback_users.append((uid, name))
+        fb_count = random.randint(*prof["feedback"])
+        if fb_count:
+            feedback_users.append((uid, name, fb_count))
         stats.append((name, email, tier, len(login_times), n_prac))
 
     uc.commit(); pc.commit()
 
     # ── 反馈 ──
-    for uid, name in random.sample(feedback_users, 5):
-        cat, sev, title, desc = random.choice(FEEDBACK_POOL)
-        fc.execute(
-            "INSERT INTO feedbacks (project, category, severity, title, description, "
-            "tester_name, user_id, username, browser_info, status, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            ["VirtuCoach", cat, sev, title, desc, name, uid, name,
-             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0",
-             random.choice(["pending", "investigating", "resolved"]),
-             fmt(NOW - timedelta(days=random.randint(0, 15), hours=random.randint(0, 20)))],
-        )
+    n_feedbacks = 0
+    for uid, name, fb_count in feedback_users:
+        for _ in range(fb_count):
+            cat, sev, title, desc = random.choice(FEEDBACK_POOL)
+            fc.execute(
+                "INSERT INTO feedbacks (project, category, severity, title, description, "
+                "tester_name, user_id, username, browser_info, status, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                ["VirtuCoach", cat, sev, title, desc, name, uid, name,
+                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0",
+                 random.choice(["pending", "investigating", "resolved"]),
+                 fmt(NOW - timedelta(days=random.randint(0, 15), hours=random.randint(0, 20)))],
+            )
+            n_feedbacks += 1
     fc.commit()
 
     print(f"已生成 {len(USERS)} 个测试用户（密码统一：{PASSWORD}）")
-    print(f"{'用户名':<8} {'邮箱':<24} {'档位':<8} 登录  练习")
+    print(f"{'用户名':<8} {'邮箱':<24} {'档位':<10} 登录  练习")
     for name, email, tier, lg, pc_n in stats:
-        print(f"{name:<8} {email:<24} {tier:<8} {lg:>3}  {pc_n:>3}")
+        print(f"{name:<8} {email:<24} {tier:<10} {lg:>3}  {pc_n:>3}")
     total_logins = uc.execute("SELECT COUNT(*) FROM login_events").fetchone()[0]
     total_prac = pc.execute("SELECT COUNT(*) FROM practice_sessions").fetchone()[0]
-    print(f"合计：{total_logins} 条登录记录、{total_prac} 条练习记录、5 条新反馈")
+    total_users = uc.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    print(f"合计：用户总数 {total_users}、{total_logins} 条登录记录、"
+          f"{total_prac} 条练习记录、{n_feedbacks} 条新反馈")
     uc.close(); pc.close(); fc.close()
 
 
