@@ -89,13 +89,31 @@
     text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600;
 }
 .user-table tbody tr:hover { background: var(--card-hover); }
-.user-table .score-good { color: var(--success); font-weight: 600; }
-.user-table .score-avg { color: var(--warning); font-weight: 600; }
-.user-table .score-low { color: var(--text-dim); }
+.user-table .pwd-cell { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.user-table .pwd-mask { letter-spacing: 2px; color: var(--text-dim); }
+.btn-reset-pwd { padding: 3px 8px; font-size: 0.72rem; border-radius: 4px; border: 1px solid var(--card-border); background: transparent; color: var(--primary-dark); cursor: pointer; }
+.btn-reset-pwd:hover { background: var(--primary-glow); border-color: var(--primary); }
+.online-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+.online-dot.on { background: var(--success); box-shadow: 0 0 4px var(--success); }
+.online-dot.off { background: var(--text-dim); opacity: 0.4; }
 
 /* ── Section visibility ── */
 .admin-section { display: none; }
 .admin-section.active { display: block; }
+
+/* ── Analytics ── */
+.analytics-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.analytics-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.analytics-type-btn.active { background: var(--primary-glow); border-color: var(--primary); color: var(--primary-dark); font-weight: 600; }
+.analytics-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+.analytics-card h3 { margin-bottom: 14px; font-size: 1rem; }
+.analytics-chart-wrap { position: relative; height: 320px; }
+.analytics-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 800px) { .analytics-grid-2 { grid-template-columns: 1fr; } }
+.tier-badge { padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
+.tier-high { background: var(--success-light); color: var(--success); }
+.tier-mid { background: var(--warning-light); color: var(--warning); }
+.tier-low { background: var(--bg); color: var(--text-dim); }
 </style>
 </head>
 <body>
@@ -126,6 +144,8 @@
             <button class="admin-tab active" onclick="switchTab('overview')">📊 数据概览</button>
             <button class="admin-tab" onclick="switchTab('feedbacks')">📝 意见收集</button>
             <button class="admin-tab" onclick="switchTab('users')">👥 用户管理</button>
+            <button class="admin-tab" onclick="switchTab('refs')">📚 参考图管理</button>
+            <button class="admin-tab" onclick="switchTab('analytics')">📈 数据分析</button>
         </div>
 
         <!-- Tab 1: Data Overview -->
@@ -169,23 +189,130 @@
                         <tr>
                             <th>用户名</th>
                             <th>邮箱</th>
+                            <th>密码</th>
                             <th>注册时间</th>
-                            <th>最后登录</th>
+                            <th>上次登录</th>
+                            <th>在线时长</th>
                             <th>练习次数</th>
-                            <th>平均分</th>
                             <th>最近练习</th>
                         </tr>
                     </thead>
                     <tbody id="userTableBody">
-                        <tr><td colspan="7" style="text-align:center;padding:32px;color:var(--text-dim);">加载中...</td></tr>
+                        <tr><td colspan="8" style="text-align:center;padding:32px;color:var(--text-dim);">加载中...</td></tr>
                     </tbody>
                 </table>
             </div>
+        </div>
+
+        <!-- Tab 4: Reference Image Management (migrated from the analysis page) -->
+        <div id="section-refs" class="admin-section">
+            <section class="ref-manager-section" id="refManagerSection" style="display:block;">
+                <div class="ref-manager-header">
+                    <h2>📚 正确手型参考图管理</h2>
+                </div>
+
+                <!-- Upload form -->
+                <div class="ref-upload-card">
+                    <h3>上传新的参考图</h3>
+                    <div class="ref-upload-row">
+                        <div class="ref-upload-preview">
+                            <div class="ref-preview-box" id="refPreviewBox">
+                                <span>🖼️</span>
+                                <p>选择图片</p>
+                            </div>
+                            <input type="file" id="refImageInput" accept="image/*" style="display:none;">
+                            <button class="btn btn-secondary" id="refSelectBtn">选择图片</button>
+                            <button class="btn btn-primary" id="refAnalyzeBtn" disabled>🤖 AI 分析</button>
+                        </div>
+                        <div class="ref-upload-form" id="refFormFields">
+                            <div class="form-row">
+                                <label>手</label>
+                                <select id="refHand"><option value="左手">左手</option><option value="右手">右手</option><option value="双手">双手</option></select>
+                            </div>
+                            <div class="form-row">
+                                <label>技巧</label>
+                                <select id="refTechnique">
+                                    <option value="basic_fretting">基本按弦</option>
+                                    <option value="natural_harmonics">自然泛音</option>
+                                    <option value="artificial_harmonics">人工泛音</option>
+                                    <option value="pm">PM闷音</option>
+                                    <option value="am">AM指弹</option>
+                                    <option value="tapping">点弦</option>
+                                    <option value="muting">左手闷音</option>
+                                    <option value="bend">推弦</option>
+                                    <option value="slide">滑音</option>
+                                    <option value="vibrato">揉弦</option>
+                                    <option value="hammer_on">击弦</option>
+                                    <option value="pull_off">勾弦</option>
+                                </select>
+                            </div>
+                            <div class="form-row">
+                                <label>部位</label>
+                                <select id="refBodyPart">
+                                    <option value="full_hand">全手</option>
+                                    <option value="wrist">手腕</option>
+                                    <option value="thumb">拇指</option>
+                                    <option value="index_finger">食指</option>
+                                    <option value="middle_finger">中指</option>
+                                    <option value="ring_finger">无名指</option>
+                                    <option value="pinky">小指</option>
+                                </select>
+                            </div>
+                            <div class="form-row">
+                                <label>视角</label>
+                                <select id="refView"><option value="前">正面</option><option value="侧">侧面</option><option value="上">上方</option></select>
+                            </div>
+                            <div class="form-row" style="grid-column:1/-1;">
+                                <label>描述</label>
+                                <input type="text" id="refDescription" placeholder="描述这个正确手型的要点">
+                            </div>
+                            <div class="form-row" style="grid-column:1/-1;">
+                                <label>标签（逗号分隔）</label>
+                                <input type="text" id="refTags" placeholder="如: 按弦,手指立起,指尖">
+                            </div>
+                            <div style="grid-column:1/-1;text-align:right;">
+                                <button class="btn btn-primary" id="refSaveBtn" disabled>💾 保存参考图</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Existing reference image list -->
+                <div class="ref-gallery-card">
+                    <h3>已有参考图 <span id="refCount" style="color:var(--text-dim);font-size:14px;">(加载中...)</span></h3>
+                    <div class="ref-gallery-grid" id="refGalleryGrid"></div>
+                </div>
+            </section>
+        </div>
+
+        <!-- Tab 5: Data Analytics -->
+        <div id="section-analytics" class="admin-section">
+            <div class="analytics-toolbar">
+                <div class="analytics-btns">
+                    <button class="btn btn-outline btn-sm analytics-type-btn active" data-type="online" onclick="switchAnalytics('online')">👥 在线统计</button>
+                    <button class="btn btn-outline btn-sm analytics-type-btn" data-type="logins" onclick="switchAnalytics('logins')">🔑 登录频率</button>
+                    <button class="btn btn-outline btn-sm analytics-type-btn" data-type="practice" onclick="switchAnalytics('practice')">🎸 练习分析</button>
+                    <button class="btn btn-outline btn-sm analytics-type-btn" data-type="growth" onclick="switchAnalytics('growth')">📈 用户增长</button>
+                    <button class="btn btn-outline btn-sm analytics-type-btn" data-type="willingness" onclick="switchAnalytics('willingness')">💗 使用意愿</button>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <select id="analyticsDays" style="padding:6px 10px;border:1px solid var(--card-border);border-radius:6px;background:var(--bg);color:var(--text);font-size:0.8rem;">
+                        <option value="7">近7天</option>
+                        <option value="30" selected>近30天</option>
+                        <option value="90">近90天</option>
+                    </select>
+                    <button id="analyticsExportBtn" class="btn btn-outline btn-sm">⬇ 导出CSV</button>
+                </div>
+            </div>
+            <div id="analyticsContent"><div class="empty">点击上方按钮查看分析结果</div></div>
         </div>
     </div>
 
     <div class="toast" id="toast"></div>
 </div>
+
+<!-- Chart.js (CDN) — 加载失败时数据分析降级为纯表格 -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
 <script>
 const API = '/api';
@@ -242,10 +369,9 @@ async function login() {
 
 function switchTab(tab) {
     currentTab = tab;
-    document.querySelectorAll('.admin-tab').forEach((t, i) => {
-        t.classList.toggle('active', t.textContent.includes(
-            tab === 'overview' ? '数据概览' : tab === 'feedbacks' ? '意见收集' : '用户管理'
-        ));
+    const tabNames = { overview: '数据概览', feedbacks: '意见收集', users: '用户管理', refs: '参考图管理', analytics: '数据分析' };
+    document.querySelectorAll('.admin-tab').forEach((t) => {
+        t.classList.toggle('active', t.textContent.includes(tabNames[tab]));
     });
     document.querySelectorAll('.admin-section').forEach(s => s.classList.remove('active'));
     document.getElementById('section-' + tab).classList.add('active');
@@ -253,6 +379,8 @@ function switchTab(tab) {
     if (tab === 'overview') loadOverview();
     else if (tab === 'feedbacks') { loadFeedbackStats(); loadFeedbacks(); }
     else if (tab === 'users') loadUsers();
+    else if (tab === 'refs' && typeof loadRefGallery === 'function') loadRefGallery();
+    else if (tab === 'analytics') switchAnalytics(currentAnalytics);
 }
 
 // ═══════════════ Data Overview ═══════════════
@@ -278,10 +406,6 @@ async function loadOverview() {
                 <div class="label">今日练习次数</div>
             </div>
             <div class="overview-stat-card">
-                <div class="num">${d.avg_score}</div>
-                <div class="label">平均得分</div>
-            </div>
-            <div class="overview-stat-card">
                 <div class="num">${d.total_feedbacks}</div>
                 <div class="label">反馈总数</div>
             </div>
@@ -296,32 +420,74 @@ async function loadUsers() {
         const data = await res.json();
         const tbody = document.getElementById('userTableBody');
         if (!data.users.length) {
-            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--text-dim);">暂无用户</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--text-dim);">暂无用户</td></tr>';
             return;
         }
         tbody.innerHTML = data.users.map(u => {
-            const scoreClass = u.avg_score >= 80 ? 'score-good' : u.avg_score >= 60 ? 'score-avg' : 'score-low';
+            const online = isOnline(u.last_activity);
             return `
                 <tr>
                     <td><strong>${esc(u.username)}</strong></td>
                     <td>${esc(u.email)}</td>
+                    <td><div class="pwd-cell"><span class="pwd-mask">••••••</span><button class="btn-reset-pwd" onclick="resetPassword(${u.id}, '${esc(u.username)}')">重置</button></div></td>
                     <td>${formatDate(u.created_at)}</td>
-                    <td>${u.last_login ? formatDate(u.last_login) : '<span style="color:var(--text-dim)">-</span>'}</td>
+                    <td>${u.last_login ? formatDateTime(u.last_login) : '<span style="color:var(--text-dim)">-</span>'}</td>
+                    <td><span class="online-dot ${online ? 'on' : 'off'}"></span>${formatDuration(u.active_seconds)}</td>
                     <td>${u.practice_count}</td>
-                    <td><span class="${scoreClass}">${u.avg_score}</span></td>
                     <td>${u.last_practice ? formatDate(u.last_practice) : '<span style="color:var(--text-dim)">-</span>'}</td>
                 </tr>
             `;
         }).join('');
     } catch (err) {
-        document.getElementById('userTableBody').innerHTML = '<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--danger);">加载失败</td></tr>';
+        document.getElementById('userTableBody').innerHTML = '<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--danger);">加载失败</td></tr>';
     }
+}
+
+async function resetPassword(id, username) {
+    const pw = prompt('为用户「' + username + '」设置新密码（6-128位）：');
+    if (!pw) return;
+    try {
+        const res = await fetch(API + '/admin/users/' + id + '/reset-password?admin_token=' + encodeURIComponent(getToken()), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ new_password: pw }),
+        });
+        if (!res.ok) {
+            const d = await res.json().catch(() => ({}));
+            throw new Error(d.detail || '请求失败');
+        }
+        toast('密码已重置', 'success');
+    } catch (err) {
+        toast('重置失败：' + err.message, 'error');
+    }
+}
+
+function isOnline(lastActivity) {
+    if (!lastActivity) return false;
+    const d = new Date(lastActivity.replace(' ', 'T') + (lastActivity.includes('+') ? '' : '+08:00'));
+    return (Date.now() - d.getTime()) < 30 * 60 * 1000;
+}
+
+function formatDuration(sec) {
+    if (!sec || sec <= 0) return '0分钟';
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    if (h > 0) return h + '小时' + (m > 0 ? m + '分' : '');
+    if (m > 0) return m + '分钟';
+    return Math.floor(sec) + '秒';
 }
 
 function formatDate(ts) {
     if (!ts) return '-';
     const d = new Date(ts.replace(' ', 'T') + (ts.includes('+') ? '' : '+08:00'));
     return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+}
+
+function formatDateTime(ts) {
+    if (!ts) return '-';
+    const d = new Date(ts.replace(' ', 'T') + (ts.includes('+') ? '' : '+08:00'));
+    return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }) + ' ' +
+           d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 }
 
 // ═══════════════ Feedback Management ═══════════════
@@ -588,7 +754,338 @@ function parseUA(ua) {
     return parts.join(' / ');
 }
 
+// ═══════════════ Data Analytics ═══════════════
+let currentAnalytics = 'online';
+let analyticsCharts = [];
+const ANALYTICS_EXPORT_MAP = { online: 'users', logins: 'logins', practice: 'practice', growth: 'users', willingness: 'willingness' };
+const ANALYTICS_PALETTE = ['#5c6bc0', '#e53935', '#f59e0b', '#43a047', '#8e24aa', '#00897b', '#3949ab', '#d81b60'];
+
+function themeDim() {
+    return getComputedStyle(document.body).getPropertyValue('--text-dim').trim() || '#8a8f9e';
+}
+
+function destroyAnalyticsCharts() {
+    analyticsCharts.forEach(c => { try { c.destroy(); } catch (e) { /* ignore */ } });
+    analyticsCharts = [];
+}
+
+function makeChart(canvasId, config) {
+    if (!window.Chart) return;
+    const el = document.getElementById(canvasId);
+    if (!el) return;
+    analyticsCharts.push(new Chart(el.getContext('2d'), config));
+}
+
+function chartFallbackNote() {
+    return '<div class="empty">⚠️ 图表库（Chart.js）加载失败，已降级为纯表格展示。联网后刷新页面即可看到图表。</div>';
+}
+
+function baseChartOptions(yTitle) {
+    const dim = themeDim();
+    return {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: dim } } },
+        scales: {
+            x: { ticks: { color: dim }, grid: { color: 'rgba(128,128,128,0.12)' } },
+            y: {
+                beginAtZero: true,
+                ticks: { color: dim, precision: 0 },
+                grid: { color: 'rgba(128,128,128,0.12)' },
+                title: yTitle ? { display: true, text: yTitle, color: dim } : undefined,
+            },
+        },
+    };
+}
+
+function emptyRow(span) {
+    return '<tr><td colspan="' + span + '" style="text-align:center;padding:24px;color:var(--text-dim);">暂无数据</td></tr>';
+}
+
+function switchAnalytics(type) {
+    currentAnalytics = type;
+    document.querySelectorAll('.analytics-type-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.type === type));
+    const daysSel = document.getElementById('analyticsDays');
+    const showDays = (type === 'logins' || type === 'practice' || type === 'growth');
+    daysSel.style.display = showDays ? '' : 'none';
+    const exportType = ANALYTICS_EXPORT_MAP[type];
+    document.getElementById('analyticsExportBtn').onclick = () => {
+        window.location.href = API + '/admin/analytics/export?type=' + exportType +
+            '&days=' + daysSel.value + '&admin_token=' + encodeURIComponent(getToken());
+    };
+    loadAnalytics();
+}
+
+async function loadAnalytics() {
+    destroyAnalyticsCharts();
+    const content = document.getElementById('analyticsContent');
+    content.innerHTML = '<div class="empty">加载中...</div>';
+    const token = encodeURIComponent(getToken());
+    const days = document.getElementById('analyticsDays').value;
+    try {
+        let url;
+        if (currentAnalytics === 'online') url = API + '/admin/analytics/online?admin_token=' + token;
+        else if (currentAnalytics === 'willingness') url = API + '/admin/analytics/willingness?admin_token=' + token;
+        else url = API + '/admin/analytics/' + currentAnalytics + '?days=' + days + '&admin_token=' + token;
+        const res = await fetch(url);
+        if (!res.ok) {
+            const e = await res.json().catch(() => ({}));
+            throw new Error(e.detail || ('HTTP ' + res.status));
+        }
+        const d = await res.json();
+        if (currentAnalytics === 'online') renderOnline(d);
+        else if (currentAnalytics === 'logins') renderLogins(d);
+        else if (currentAnalytics === 'practice') renderPractice(d);
+        else if (currentAnalytics === 'growth') renderGrowth(d);
+        else if (currentAnalytics === 'willingness') renderWillingness(d);
+    } catch (err) {
+        content.innerHTML = '<div class="empty">数据加载失败：' + esc(err.message) + '</div>';
+    }
+}
+
+function renderOnline(d) {
+    const content = document.getElementById('analyticsContent');
+    const rows = d.top_active.length ? d.top_active.map(u => `
+        <tr>
+            <td><strong>${esc(u.username)}</strong></td>
+            <td>${formatDuration(u.active_seconds)}</td>
+            <td>${u.last_activity ? formatDateTime(u.last_activity) : '-'}</td>
+        </tr>`).join('') : emptyRow(3);
+    content.innerHTML = `
+        <div class="overview-stats">
+            <div class="overview-stat-card"><div class="num">${d.current_online}</div><div class="label">当前在线（近${d.online_window_minutes}分钟活跃）</div></div>
+            <div class="overview-stat-card"><div class="num">${d.today_active}</div><div class="label">今日活跃用户</div></div>
+            <div class="overview-stat-card"><div class="num">${d.week_active}</div><div class="label">近7日活跃用户</div></div>
+        </div>
+        <div class="analytics-card">
+            <h3>🏆 活跃时长排行 Top ${d.top_active.length}</h3>
+            ${window.Chart ? '<div class="analytics-chart-wrap"><canvas id="chartOnline"></canvas></div>' : chartFallbackNote()}
+            <table class="user-table" style="margin-top:14px;">
+                <thead><tr><th>用户名</th><th>累计在线时长</th><th>最近活跃</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+    `;
+    makeChart('chartOnline', {
+        type: 'bar',
+        data: {
+            labels: d.top_active.map(u => u.username),
+            datasets: [{ label: '在线时长（分钟）', data: d.top_active.map(u => Math.round((u.active_seconds || 0) / 60)), backgroundColor: '#5c6bc0' }],
+        },
+        options: baseChartOptions('分钟'),
+    });
+}
+
+function renderLogins(d) {
+    const content = document.getElementById('analyticsContent');
+    const avg = d.days ? (d.total / d.days).toFixed(1) : '0';
+    const rows = d.ranking.length ? d.ranking.map(r => `
+        <tr>
+            <td><strong>${esc(r.username)}</strong></td>
+            <td>${r.cnt}</td>
+            <td>${r.last_login_at ? formatDateTime(r.last_login_at) : '-'}</td>
+        </tr>`).join('') : emptyRow(3);
+    content.innerHTML = `
+        <div class="overview-stats">
+            <div class="overview-stat-card"><div class="num">${d.total}</div><div class="label">近${d.days}天登录总次数</div></div>
+            <div class="overview-stat-card"><div class="num">${avg}</div><div class="label">日均登录次数</div></div>
+            <div class="overview-stat-card"><div class="num">${d.ranking.length}</div><div class="label">有登录记录的用户数</div></div>
+        </div>
+        <div class="analytics-card">
+            <h3>每日登录趋势（近${d.days}天）</h3>
+            ${window.Chart ? '<div class="analytics-chart-wrap"><canvas id="chartLogins"></canvas></div>' : chartFallbackNote()}
+        </div>
+        <div class="analytics-card">
+            <h3>登录次数排行 Top ${d.ranking.length}</h3>
+            <table class="user-table">
+                <thead><tr><th>用户名</th><th>登录次数</th><th>最近登录</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+    `;
+    makeChart('chartLogins', {
+        type: 'line',
+        data: {
+            labels: d.dates.map(s => s.slice(5)),
+            datasets: [{ label: '登录次数', data: d.daily, borderColor: '#5c6bc0', backgroundColor: 'rgba(92,107,192,0.15)', fill: true, tension: 0.3 }],
+        },
+        options: baseChartOptions('次数'),
+    });
+}
+
+function renderPractice(d) {
+    const content = document.getElementById('analyticsContent');
+    const rows = d.ranking.length ? d.ranking.map(r => `
+        <tr>
+            <td><strong>${esc(r.username)}</strong></td>
+            <td>${r.count}</td>
+            <td>${r.avg_score != null ? r.avg_score : '-'}</td>
+        </tr>`).join('') : emptyRow(3);
+    const trackRows = d.track_distribution.length ? d.track_distribution.map(t => `
+        <tr><td>${esc(t.name)}</td><td>${t.count}</td></tr>`).join('') : emptyRow(2);
+    content.innerHTML = `
+        <div class="overview-stats">
+            <div class="overview-stat-card"><div class="num">${d.total}</div><div class="label">近${d.days}天练习总次数</div></div>
+            <div class="overview-stat-card"><div class="num">${d.ranking.length}</div><div class="label">有练习记录的用户数</div></div>
+            <div class="overview-stat-card"><div class="num">${d.track_distribution.length}</div><div class="label">涉及曲目/和弦数</div></div>
+        </div>
+        <div class="analytics-card">
+            <h3>每日练习趋势（近${d.days}天）</h3>
+            ${window.Chart ? '<div class="analytics-chart-wrap"><canvas id="chartPracticeDaily"></canvas></div>' : chartFallbackNote()}
+        </div>
+        <div class="analytics-grid-2">
+            <div class="analytics-card">
+                <h3>曲目/和弦分布 Top ${d.track_distribution.length}</h3>
+                ${window.Chart ? '<div class="analytics-chart-wrap" style="height:260px;"><canvas id="chartTracks"></canvas></div>' : ''}
+                <table class="user-table" style="margin-top:14px;">
+                    <thead><tr><th>曲目/和弦</th><th>练习次数</th></tr></thead>
+                    <tbody>${trackRows}</tbody>
+                </table>
+            </div>
+            <div class="analytics-card">
+                <h3>分数段分布</h3>
+                ${window.Chart ? '<div class="analytics-chart-wrap" style="height:260px;"><canvas id="chartBuckets"></canvas></div>' : '<div class="empty">（图表不可用）</div>'}
+                <p style="margin-top:14px;font-size:0.8rem;color:var(--text-dim);">仅统计有评分（&gt;0）的练习记录。</p>
+            </div>
+        </div>
+        <div class="analytics-card">
+            <h3>练习排行 Top ${d.ranking.length}</h3>
+            <table class="user-table">
+                <thead><tr><th>用户名</th><th>练习次数</th><th>平均分</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+    `;
+    makeChart('chartPracticeDaily', {
+        type: 'bar',
+        data: {
+            labels: d.dates.map(s => s.slice(5)),
+            datasets: [{ label: '练习次数', data: d.daily, backgroundColor: '#5c6bc0' }],
+        },
+        options: baseChartOptions('次数'),
+    });
+    makeChart('chartTracks', {
+        type: 'doughnut',
+        data: {
+            labels: d.track_distribution.map(t => t.name),
+            datasets: [{ data: d.track_distribution.map(t => t.count), backgroundColor: ANALYTICS_PALETTE }],
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { color: themeDim() } } } },
+    });
+    const bucketLabels = ['0-60', '60-75', '75-90', '90+'];
+    const bucketColors = ['#e53935', '#f59e0b', '#5c6bc0', '#43a047'];
+    const bucketOptions = baseChartOptions('次数');
+    bucketOptions.plugins.legend.display = false;
+    makeChart('chartBuckets', {
+        type: 'bar',
+        data: {
+            labels: bucketLabels,
+            datasets: [{ label: '练习次数', data: bucketLabels.map(k => d.score_buckets[k] || 0), backgroundColor: bucketColors }],
+        },
+        options: bucketOptions,
+    });
+}
+
+function renderGrowth(d) {
+    const content = document.getElementById('analyticsContent');
+    const newUsers = d.daily_registrations.reduce((a, b) => a + b, 0);
+    content.innerHTML = `
+        <div class="overview-stats">
+            <div class="overview-stat-card"><div class="num">${d.total_users}</div><div class="label">用户总数</div></div>
+            <div class="overview-stat-card"><div class="num">${newUsers}</div><div class="label">近${d.days}天新增用户</div></div>
+            <div class="overview-stat-card"><div class="num">${d.cumulative.length ? d.cumulative[d.cumulative.length - 1] : 0}</div><div class="label">当前累计用户</div></div>
+        </div>
+        <div class="analytics-card">
+            <h3>用户增长（近${d.days}天）</h3>
+            ${window.Chart ? '<div class="analytics-chart-wrap"><canvas id="chartGrowth"></canvas></div>' : chartFallbackNote()}
+        </div>
+    `;
+    const dim = themeDim();
+    makeChart('chartGrowth', {
+        data: {
+            labels: d.dates.map(s => s.slice(5)),
+            datasets: [
+                { type: 'line', label: '累计用户数', data: d.cumulative, borderColor: '#43a047', backgroundColor: 'rgba(67,160,71,0.12)', fill: true, tension: 0.3, yAxisID: 'y1' },
+                { type: 'bar', label: '每日新增', data: d.daily_registrations, backgroundColor: '#5c6bc0', yAxisID: 'y' },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: dim } } },
+            scales: {
+                x: { ticks: { color: dim }, grid: { color: 'rgba(128,128,128,0.12)' } },
+                y: { beginAtZero: true, position: 'left', ticks: { color: dim, precision: 0 }, grid: { color: 'rgba(128,128,128,0.12)' }, title: { display: true, text: '每日新增', color: dim } },
+                y1: { beginAtZero: true, position: 'right', ticks: { color: dim, precision: 0 }, grid: { drawOnChartArea: false }, title: { display: true, text: '累计用户数', color: dim } },
+            },
+        },
+    });
+}
+
+function renderWillingness(d) {
+    const content = document.getElementById('analyticsContent');
+    const tierLabels = { high: '高意愿', mid: '中意愿', low: '低意愿' };
+    const rows = d.users.length ? d.users.map(u => `
+        <tr>
+            <td><strong>${esc(u.username)}</strong></td>
+            <td>${u.score}</td>
+            <td><span class="tier-badge tier-${u.tier}">${tierLabels[u.tier]}</span></td>
+            <td>${u.logins}</td>
+            <td>${u.practices}</td>
+            <td>${formatDuration(u.active_seconds)}</td>
+            <td>${u.feedbacks}</td>
+        </tr>`).join('') : emptyRow(7);
+    content.innerHTML = `
+        <div class="overview-stats">
+            <div class="overview-stat-card"><div class="num">${d.users.length}</div><div class="label">用户总数</div></div>
+            <div class="overview-stat-card"><div class="num" style="color:#43a047;">${d.tiers.high}</div><div class="label">高意愿</div></div>
+            <div class="overview-stat-card"><div class="num" style="color:#f59e0b;">${d.tiers.mid}</div><div class="label">中意愿</div></div>
+            <div class="overview-stat-card"><div class="num" style="color:#e53935;">${d.tiers.low}</div><div class="label">低意愿</div></div>
+        </div>
+        <div class="analytics-grid-2">
+            <div class="analytics-card">
+                <h3>意愿档位占比（近${d.window_days}天）</h3>
+                ${window.Chart ? '<div class="analytics-chart-wrap" style="height:260px;"><canvas id="chartTiers"></canvas></div>' : chartFallbackNote()}
+            </div>
+            <div class="analytics-card">
+                <h3>评分说明</h3>
+                <p style="font-size:0.875rem;line-height:1.8;color:var(--text-dim);">
+                    综合评分 = 登录次数 × 30% + 练习次数 × 30% + 在线时长 × 20% + 反馈参与 × 20%。<br>
+                    每个维度在全体用户间归一化后加权，满分 100。<br>
+                    档位划分：高分 = 高意愿，中分 = 中意愿，低分 = 低意愿。<br>
+                    登录与活跃数据自本功能上线起积累，初期分数偏低属正常现象。
+                </p>
+            </div>
+        </div>
+        <div class="analytics-card">
+            <h3>用户使用意愿明细</h3>
+            <div class="user-table-wrap">
+                <table class="user-table">
+                    <thead><tr><th>用户名</th><th>评分</th><th>档位</th><th>登录次数</th><th>练习次数</th><th>在线时长</th><th>反馈次数</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
+    makeChart('chartTiers', {
+        type: 'doughnut',
+        data: {
+            labels: ['高意愿', '中意愿', '低意愿'],
+            datasets: [{ data: [d.tiers.high, d.tiers.mid, d.tiers.low], backgroundColor: ['#43a047', '#f59e0b', '#e53935'] }],
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: themeDim() } } } },
+    });
+}
+
 initAdminPage();
 </script>
+
+<!-- reference-manager.js compatibility shims (originally depended on app.js globals) -->
+<script>
+var API_BASE = window.location.origin;
+function showToast(message, type) { toast(message, type === 'error' ? 'error' : 'success'); }
+</script>
+<script src="js/reference-manager.js?v=14"></script>
 </body>
 </html>

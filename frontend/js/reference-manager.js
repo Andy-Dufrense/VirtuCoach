@@ -16,26 +16,34 @@ function initRefManager() {
     var analyzeBtn = document.getElementById("refAnalyzeBtn");
     var saveBtn = document.getElementById("refSaveBtn");
 
-    if (!toggleBtn) return;
+    if (!panel) return;
 
-    // 参考图管理按钮始终可见
-    toggleBtn.style.display = "";
+    // 打开面板时隐藏页面其他区块（若存在）
+    function hideOtherSections() {
+        ["uploadSection", "progressSection", "resultSection"].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.style.display = "none";
+        });
+    }
 
-    toggleBtn.addEventListener("click", function() {
-        if (panel.style.display === "none" || !panel.style.display) {
-            panel.style.display = "block";
-            document.getElementById("uploadSection").style.display = "none";
-            document.getElementById("progressSection").style.display = "none";
-            document.getElementById("resultSection").style.display = "none";
-            loadRefGallery();
-        } else {
+    if (toggleBtn) {
+        toggleBtn.style.display = "";
+        toggleBtn.addEventListener("click", function() {
+            if (panel.style.display === "none" || !panel.style.display) {
+                panel.style.display = "block";
+                hideOtherSections();
+                loadRefGallery();
+            } else {
+                panel.style.display = "none";
+            }
+        });
+    }
+
+    if (closeBtn) {
+        closeBtn.addEventListener("click", function() {
             panel.style.display = "none";
-        }
-    });
-
-    closeBtn.addEventListener("click", function() {
-        panel.style.display = "none";
-    });
+        });
+    }
 
     selectBtn.addEventListener("click", function() { imageInput.click(); });
 

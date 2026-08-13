@@ -77,6 +77,12 @@ def login_user(username_or_email: str, password: str) -> tuple[UserResponse, str
             "UPDATE users SET last_login = datetime('now','localtime') WHERE id = ?",
             [row["id"]],
         )
+        # 登录日志：供 admin 登录频率等数据分析使用
+        conn.execute(
+            "INSERT INTO login_events (user_id, login_at) "
+            "VALUES (?, datetime('now','localtime'))",
+            [row["id"]],
+        )
         conn.commit()
 
         token = create_access_token(row["id"], row["username"])
@@ -109,5 +115,55 @@ def get_user_by_id(user_id: int) -> UserResponse | None:
     try:
         row = conn.execute("SELECT * FROM users WHERE id = ?", [user_id]).fetchone()
         return UserResponse.from_row(row) if row else None
+    finally:
+        conn.close()
+
+
+# 两次请求间隔超过该秒数视为会话结束，不累计在线时长
+ACTIVITY_GAP_CAP = 1800
+
+
+def touch_activity(user_id: int):
+    """记录用户活跃时间；与上次活跃间隔不超过上限时累计在线时长。"""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT last_activity FROM users WHERE id = ?", [user_id]
+        ).fetchone()
+        if not row:
+            return
+        now = datetime.now()
+        add = 0
+        if row["last_activity"]:
+            try:
+                last = datetime.strptime(row["last_activity"], "%Y-%m-%d %H:%M:%S")
+                gap = (now - last).total_seconds()
+                if 0 < gap <= ACTIVITY_GAP_CAP:
+                    add = int(gap)
+            except ValueError:
+                pass
+        conn.execute(
+            "UPDATE users SET last_activity = ?, active_seconds = active_seconds + ? WHERE id = ?",
+            [now.strftime("%Y-%m-%d %H:%M:%S"), add, user_id],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def admin_reset_password(user_id: int, new_password: str):
+    """管理员重置用户密码。"""
+    if len(new_password) < 6 or len(new_password) > 128:
+        raise ValueError("新密码需6-128个字符")
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT id FROM users WHERE id = ?", [user_id]).fetchone()
+        if not row:
+            raise ValueError("用户不存在")
+        conn.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            [hash_password(new_password), user_id],
+        )
+        conn.commit()
     finally:
         conn.close()

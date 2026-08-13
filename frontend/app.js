@@ -600,7 +600,7 @@ function showResult(data) {
     }
 
     // 追问面板
-    try { renderChatPanel(); showChatPanel(); } catch(e) {}
+    try { renderChatPanel(); showChatPanel(); } catch(e) { console.error("AI助手初始化失败:", e); }
 }
 
 // ========== 正确手型对比渲染（以后端 referenceImages 分组为准）==========
@@ -824,7 +824,7 @@ function bindChatEvents(toggle, overlay, popup) {
 }
 
 function setupTextSelection(popup, overlay) {
-    var selContainers = document.querySelectorAll(".report-content, .summary-card, #handIssueItems, #audioErrorList");
+    var selContainers = document.querySelectorAll(".report-content, .summary-card, #handIssueList, #audioErrorList");
     selContainers.forEach(function (container) {
         if (!container) return;
         container.addEventListener("mouseup", function (e) {
@@ -868,7 +868,7 @@ function setupTextSelection(popup, overlay) {
 
 function showChatPanel() {
     var toggle = document.getElementById("chatSidebarToggle");
-    if (toggle) toggle.style.display = "";
+    if (toggle) toggle.style.display = "block";
 }
 
 async function sendQuestion() {

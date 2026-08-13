@@ -13,7 +13,6 @@
             <span style="font-size:18px;font-weight:700;background:linear-gradient(135deg,var(--primary-light),var(--primary));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">VirtuCoach</span>
             <a href="/dashboard.html" style="color:var(--text-dim);font-size:13px;text-decoration:none;">← 返回控制台</a>
             <span id="navUser" style="margin-left:auto;color:var(--text-dim);font-size:13px;"></span>
-            <button class="btn btn-secondary btn-small" id="refManagerBtn">📚 参考图管理</button>
             <button class="btn btn-secondary btn-small" onclick="VirtuCoach.logout()" id="logoutBtn" style="display:none;">退出</button>
         </div>
 
@@ -382,86 +381,6 @@
                 </div>
             </section>
 
-            <!-- ====== 参考图管理面板 ====== -->
-            <section class="ref-manager-section" id="refManagerSection" style="display:none;">
-                <div class="ref-manager-header">
-                    <h2>📚 正确手型参考图管理</h2>
-                    <button class="btn btn-secondary" id="refManagerClose">✕ 关闭</button>
-                </div>
-
-                <!-- 上传表单 -->
-                <div class="ref-upload-card">
-                    <h3>上传新的参考图</h3>
-                    <div class="ref-upload-row">
-                        <div class="ref-upload-preview">
-                            <div class="ref-preview-box" id="refPreviewBox">
-                                <span>🖼️</span>
-                                <p>选择图片</p>
-                            </div>
-                            <input type="file" id="refImageInput" accept="image/*" style="display:none;">
-                            <button class="btn btn-secondary" id="refSelectBtn">选择图片</button>
-                            <button class="btn btn-primary" id="refAnalyzeBtn" disabled>🤖 AI 分析</button>
-                        </div>
-                        <div class="ref-upload-form" id="refFormFields">
-                            <div class="form-row">
-                                <label>手</label>
-                                <select id="refHand"><option value="左手">左手</option><option value="右手">右手</option><option value="双手">双手</option></select>
-                            </div>
-                            <div class="form-row">
-                                <label>技巧</label>
-                                <select id="refTechnique">
-                                    <option value="basic_fretting">基本按弦</option>
-                                    <option value="natural_harmonics">自然泛音</option>
-                                    <option value="artificial_harmonics">人工泛音</option>
-                                    <option value="pm">PM闷音</option>
-                                    <option value="am">AM指弹</option>
-                                    <option value="tapping">点弦</option>
-                                    <option value="muting">左手闷音</option>
-                                    <option value="bend">推弦</option>
-                                    <option value="slide">滑音</option>
-                                    <option value="vibrato">揉弦</option>
-                                    <option value="hammer_on">击弦</option>
-                                    <option value="pull_off">勾弦</option>
-                                </select>
-                            </div>
-                            <div class="form-row">
-                                <label>部位</label>
-                                <select id="refBodyPart">
-                                    <option value="full_hand">全手</option>
-                                    <option value="wrist">手腕</option>
-                                    <option value="thumb">拇指</option>
-                                    <option value="index_finger">食指</option>
-                                    <option value="middle_finger">中指</option>
-                                    <option value="ring_finger">无名指</option>
-                                    <option value="pinky">小指</option>
-                                </select>
-                            </div>
-                            <div class="form-row">
-                                <label>视角</label>
-                                <select id="refView"><option value="前">正面</option><option value="侧">侧面</option><option value="上">上方</option></select>
-                            </div>
-                            <div class="form-row" style="grid-column:1/-1;">
-                                <label>描述</label>
-                                <input type="text" id="refDescription" placeholder="描述这个正确手型的要点">
-                            </div>
-                            <div class="form-row" style="grid-column:1/-1;">
-                                <label>标签（逗号分隔）</label>
-                                <input type="text" id="refTags" placeholder="如: 按弦,手指立起,指尖">
-                            </div>
-                            <div style="grid-column:1/-1;text-align:right;">
-                                <button class="btn btn-primary" id="refSaveBtn" disabled>💾 保存参考图</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 已有参考图列表 -->
-                <div class="ref-gallery-card">
-                    <h3>已有参考图 <span id="refCount" style="color:var(--text-dim);font-size:14px;">(加载中...)</span></h3>
-                    <div class="ref-gallery-grid" id="refGalleryGrid"></div>
-                </div>
-            </section>
-
         </main>
 
         <!-- 意见反馈 Widget -->
@@ -525,9 +444,8 @@
     </div>
 
     <script src="js/auth.js"></script>
-    <script src="js/hand-check.js?v=13"></script>
-    <script src="js/reference-manager.js?v=13"></script>
-    <script src="app.js?v=13"></script>
+    <script src="js/hand-check.js?v=14"></script>
+    <script src="app.js?v=14"></script>
     <script>
     (function () {
       if (VirtuCoach.isLoggedIn()) {

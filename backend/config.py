@@ -52,6 +52,15 @@ JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "24"))
 HOST = os.environ.get("VIRTUCOACH_HOST", "0.0.0.0")
 PORT = int(os.environ.get("VIRTUCOACH_PORT", "1218"))
 
+# ---- admin ----
+ADMIN_PASSWORD = os.environ.get("VIRTUCOACH_ADMIN_PASSWORD", "andy0716")
+
+# ---- admin analytics ----
+ONLINE_WINDOW_MINUTES = 30        # last_activity 在此窗口内视为在线
+WILLINGNESS_WINDOW_DAYS = 30      # 使用意愿统计的时间窗口
+WILLINGNESS_HIGH = 70             # ≥ 此分数为高意愿
+WILLINGNESS_LOW = 40              # < 此分数为低意愿
+
 # ---- CORS ----
 # Comma-separated list of allowed origins. Defaults to localhost for dev.
 # Set VIRTUCOACH_CORS_ORIGINS="*" to allow all (dev only).

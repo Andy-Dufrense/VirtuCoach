@@ -7,8 +7,18 @@ require_user — raises 401 if no valid token.
 from fastapi import Header, HTTPException
 from typing import Optional
 
-from user_service import decode_access_token, get_user_by_id
+from user_service import decode_access_token, get_user_by_id, touch_activity
 from user_models import UserResponse
+
+
+def _touch(user: Optional[UserResponse]) -> Optional[UserResponse]:
+    """认证成功后记录活跃时间（失败不影响认证本身）。"""
+    if user:
+        try:
+            touch_activity(user.id)
+        except Exception:
+            pass
+    return user
 
 
 async def get_current_user(
@@ -23,7 +33,7 @@ async def get_current_user(
     except ValueError:
         return None
     user = get_user_by_id(payload["user_id"])
-    return user
+    return _touch(user)
 
 
 async def require_user(
@@ -40,4 +50,4 @@ async def require_user(
     user = get_user_by_id(payload["user_id"])
     if not user:
         raise HTTPException(status_code=401, detail="用户不存在")
-    return user
+    return _touch(user)

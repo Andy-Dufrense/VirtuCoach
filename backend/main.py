@@ -34,7 +34,7 @@ from fastapi import FastAPI, HTTPException, File, Form, UploadFile, Query, Heade
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from config import UPLOAD_DIR, HOST, PORT, CORS_ORIGINS, validate
+from config import UPLOAD_DIR, HOST, PORT, CORS_ORIGINS, ADMIN_PASSWORD, validate
 from logging_config import setup_logging, get_logger
 
 # ---- logging ----
@@ -122,7 +122,6 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # ---- feedback system ----
 FEEDBACK_SCREENSHOT_DIR = Path(UPLOAD_DIR) / "feedback_screenshots"
 FEEDBACK_SCREENSHOT_DIR.mkdir(exist_ok=True)
-ADMIN_PASSWORD = "andy0716"
 init_feedback_db()
 init_user_db()
 init_practice_db()
@@ -134,6 +133,7 @@ from routers.references import create_references_router
 from routers.chat import create_chat_router
 from routers.auth import create_auth_router
 from routers.practice import create_practice_router
+from routers.analytics import router as analytics_router
 
 analysis_router = create_analysis_router(analysis_service, UPLOAD_DIR, str(FRONTEND_DIR))
 hand_check_router = create_hand_check_router(hand_check_service, UPLOAD_DIR, get_practice_db)
@@ -151,8 +151,9 @@ app.include_router(references_router)
 app.include_router(chat_router)
 app.include_router(auth_router)
 app.include_router(practice_router)
+app.include_router(analytics_router)
 
-logger.info("Routes registered: analysis, hand_check, references, chat")
+logger.info("Routes registered: analysis, hand_check, references, chat, practice, analytics")
 
 
 # ---- simple endpoints ----
@@ -457,9 +458,6 @@ def get_admin_overview():
     today_sessions = practice_conn.execute(
         "SELECT COUNT(*) FROM practice_sessions WHERE date(created_at) = date('now','localtime')"
     ).fetchone()[0]
-    avg_score = practice_conn.execute(
-        "SELECT AVG(overall_score) FROM practice_sessions WHERE overall_score > 0"
-    ).fetchone()[0] or 0
     total_feedbacks = fb_conn.execute("SELECT COUNT(*) FROM feedbacks").fetchone()[0]
 
     user_conn.close()
@@ -471,7 +469,6 @@ def get_admin_overview():
         "today_users": today_users,
         "total_sessions": total_sessions,
         "today_sessions": today_sessions,
-        "avg_score": round(avg_score, 1),
         "total_feedbacks": total_feedbacks,
     }
 
@@ -483,7 +480,8 @@ def get_admin_users():
     practice_conn = get_practice_db()
 
     users = user_conn.execute(
-        "SELECT id, username, email, created_at, last_login FROM users ORDER BY created_at DESC"
+        "SELECT id, username, email, created_at, last_login, last_activity, active_seconds "
+        "FROM users ORDER BY created_at DESC"
     ).fetchall()
 
     result = []
@@ -492,11 +490,6 @@ def get_admin_users():
         row["practice_count"] = practice_conn.execute(
             "SELECT COUNT(*) FROM practice_sessions WHERE user_id = ?", [row["id"]]
         ).fetchone()[0]
-        row["avg_score"] = practice_conn.execute(
-            "SELECT AVG(overall_score) FROM practice_sessions WHERE user_id = ? AND overall_score > 0",
-            [row["id"]],
-        ).fetchone()[0] or 0
-        row["avg_score"] = round(row["avg_score"], 1)
         row["last_practice"] = practice_conn.execute(
             "SELECT created_at FROM practice_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
             [row["id"]],
@@ -507,6 +500,23 @@ def get_admin_users():
     user_conn.close()
     practice_conn.close()
     return {"users": result}
+
+
+@app.post("/api/admin/users/{user_id}/reset-password")
+def admin_reset_user_password(
+    user_id: int,
+    body: dict,
+    admin_token: str = Query(...),
+):
+    """Admin resets a user's password (bcrypt哈希存储，原密码不可查看)."""
+    _verify_admin(admin_token)
+    from user_service import admin_reset_password
+    new_password = (body or {}).get("new_password", "")
+    try:
+        admin_reset_password(user_id, new_password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
 
 
 @app.get("/{filename:path}")
