@@ -12,6 +12,16 @@ function getAuthHeaders() {
     return {};
 }
 
+// 校验登录态：过期 token 必须跳登录页，不能静默降级为游客
+// （游客身份做分析不会保存练习记录，这是"历史为空"的根因之一）
+(async function validateSession() {
+    if (!(window.VirtuCoach && VirtuCoach.getToken())) return;
+    try {
+        const r = await fetch(`${API_BASE}/api/auth/me`, { headers: getAuthHeaders() });
+        if (r.status === 401) VirtuCoach.sessionExpired();
+    } catch (e) {}
+})();
+
 let currentTaskId = null;
 let pollTimer = null;
 
@@ -39,7 +49,8 @@ const modeImageBtn = document.getElementById("modeImageBtn");
 const uploadVideoMode = document.getElementById("uploadVideoMode");
 const uploadImageMode = document.getElementById("uploadImageMode");
 const chordInput = document.getElementById("chordInput");
-const chordDatalist = document.getElementById("chordDatalist");
+const chordSelect = document.getElementById("chordSelect");
+const chordInputWrap = document.getElementById("chordInputWrap");
 const chordMatchHint = document.getElementById("chordMatchHint");
 const chordUploadArea = document.getElementById("chordUploadArea");
 const chordRecordInstructions = document.getElementById("chordRecordInstructions");
@@ -142,6 +153,12 @@ let videoRecordState = {
 document.addEventListener("DOMContentLoaded", () => {
     checkModelStatus();
     setupEventListeners();
+    // 支持 dashboard 跳转带 ?mode=hand 直接进入手型/技巧检查
+    try {
+        const params = new URLSearchParams(window.location.search);
+        const m = params.get("mode");
+        if (m === "hand" || m === "image") switchMode("image");
+    } catch (e) { console.error("init: mode param", e); }
 });
 
 function setupEventListeners() {
@@ -181,6 +198,18 @@ function setupEventListeners() {
     try { document.getElementById("newAnalysisBtn").addEventListener("click", resetUI); } catch(e) { console.error("setup: newAnalysisBtn", e); }
     try { document.getElementById("copyReportBtn").addEventListener("click", copyReport); } catch(e) { console.error("setup: copyReportBtn", e); }
 
+    // 回放跳转：点击芯片或检测详情里的时间戳 → 定位到对应秒
+    try {
+        ["videoReplayCard", "errorListCard"].forEach(function(id) {
+            var container = document.getElementById(id);
+            if (!container) return;
+            container.addEventListener("click", function(e) {
+                var el = e.target && e.target.closest ? e.target.closest("[data-seek]") : null;
+                if (el) seekVideoTo(el.getAttribute("data-seek"));
+            });
+        });
+    } catch(e) { console.error("setup: seek delegation", e); }
+
     // 模式切换
     try { modeVideoBtn.addEventListener("click", () => switchMode("video")); } catch(e) { console.error("setup: modeVideoBtn", e); }
     try { modeImageBtn.addEventListener("click", () => switchMode("image")); } catch(e) { console.error("setup: modeImageBtn", e); }
@@ -189,6 +218,7 @@ function setupEventListeners() {
     loadChordList();
     try { chordInput.addEventListener("input", onChordInput); } catch(e) { console.error("setup: chordInput input", e); }
     try { chordInput.addEventListener("change", onChordInput); } catch(e) { console.error("setup: chordInput change", e); }
+    try { chordSelect.addEventListener("change", onChordSelect); } catch(e) { console.error("setup: chordSelect", e); }
     try { startRecordBtn.addEventListener("click", startChordRecord); } catch(e) { console.error("setup: startRecordBtn", e); }
     try { uploadChordVideoBtn.addEventListener("click", () => chordVideoInput.click()); } catch(e) { console.error("setup: uploadChordVideoBtn", e); }
     try { chordVideoInput.addEventListener("change", handleChordVideoUpload); } catch(e) { console.error("setup: chordVideoInput", e); }
@@ -254,6 +284,8 @@ async function checkModelStatus() {
 function handleFileSelect() {
     const file = videoInput.files[0];
     if (!file) return;
+    // 立即复位：否则重选同一个文件浏览器不触发 change 事件（"双击没反应"）
+    videoInput.value = "";
 
     // MIME type 在 Windows 上不可靠，扩展名兜底
     const validTypes = ["video/mp4", "video/quicktime", "video/x-msvideo", ""];
@@ -277,12 +309,8 @@ async function uploadVideo(file) {
     formData.append("instrument", instrumentSelect.value);
     formData.append("level", levelSelect.value);
     formData.append("title", file.name.replace(/\.[^/.]+$/, ""));
-    var capoVal = document.getElementById("capoSelect")?.value;
-    if (!capoVal || capoVal === "") {
-        alert("请选择变调夹位置");
-        uploadSection.style.display = "block";
-        return;
-    }
+    // 变调夹位置不再强制必选：后端会自动检测（detected_capo），未选传 "0"
+    var capoVal = document.getElementById("capoSelect")?.value || "0";
     formData.append("capo", capoVal);
 
     uploadSection.style.display = "none";
@@ -516,7 +544,7 @@ function showResult(data) {
             }
             return '<li class="severity-' + sev + '">' +
                 icon + ' <b>[' + (severityCn[sev] || '') + ']</b> ' + detail +
-                '<span class="err-time">(' + formatTime(e.time) + ')</span></li>';
+                '<span class="err-time seekable" data-seek="' + (parseFloat(e.time) || 0).toFixed(2) + '">(' + formatTime(e.time) + ')</span></li>';
         }).join("");
     } else {
         audioList.innerHTML = contentTypeNote + '<li style="border-left-color:var(--success)">✅ 未检测到明显音频问题</li>';
@@ -599,8 +627,92 @@ function showResult(data) {
         }
     }
 
+    // 原视频回放（音频错误时间点跳转）
+    try { renderVideoReplay(data); } catch(e) { console.error("renderVideoReplay", e); }
+
     // 追问面板
     try { renderChatPanel(); showChatPanel(); } catch(e) { console.error("AI助手初始化失败:", e); }
+}
+
+// ========== 原视频回放（音频错误时间点跳转）==========
+
+function collectVideoMarkers(result) {
+    result = result || {};
+    function norm(label) {
+        label = String(label || "").replace(/\s+/g, " ").trim();
+        if (label.length > 18) label = label.slice(0, 17) + "…";
+        return label;
+    }
+    var audio = [];
+    (result.audio_errors || []).forEach(function(e) {
+        var t = parseFloat(e && e.time);
+        if (isFinite(t) && t > 0.5) audio.push({ time: t, label: norm(e.detail) || "音频问题", kind: "audio" });
+    });
+    audio.sort(function(a, b) { return a.time - b.time; });
+    var merged = [];
+    audio.forEach(function(m) {
+        var last = merged[merged.length - 1];
+        if (last && m.time - last.time < 1) return; // 同一位置已有跳转点
+        merged.push(m);
+    });
+    return merged.slice(0, 12);
+}
+
+function renderVideoReplay(data) {
+    var card = document.getElementById("videoReplayCard");
+    var video = document.getElementById("replayVideo");
+    var chipsWrap = document.getElementById("markerChips");
+    if (!card || !video) return;
+    var url = data && data.video_url;
+    if (!url) {
+        card.style.display = "none";
+        if (chipsWrap) chipsWrap.innerHTML = "";
+        try { video.pause(); video.removeAttribute("src"); video.load(); } catch (e) {}
+        return;
+    }
+    card.style.display = "block";
+    if (video.getAttribute("src") !== url) video.src = url;
+    var markers = collectVideoMarkers((data && data.result) || {});
+    if (chipsWrap) {
+        if (markers.length === 0) {
+            chipsWrap.innerHTML = '<span style="color:var(--text-dim);font-size:13px;">本次音频没有发现带时间点的错误，无需跳转，可直接拖动进度条回看</span>';
+        } else {
+            chipsWrap.innerHTML = markers.map(function(m) {
+                return '<button type="button" class="marker-chip" data-seek="' + m.time.toFixed(2) + '">' +
+                    formatTime(m.time) + ' · ' + m.label + '</button>';
+            }).join("");
+        }
+    }
+    video.ontimeupdate = function() {
+        if (!chipsWrap) return;
+        var t = video.currentTime;
+        var bestIdx = -1, bestDist = 2.0;
+        markers.forEach(function(m, i) {
+            var d = Math.abs(m.time - t);
+            if (d < bestDist) { bestDist = d; bestIdx = i; }
+        });
+        var chips = chipsWrap.querySelectorAll ? chipsWrap.querySelectorAll(".marker-chip") : [];
+        for (var i = 0; i < chips.length; i++) {
+            if (chips[i].classList) {
+                if (i === bestIdx) chips[i].classList.add("active");
+                else chips[i].classList.remove("active");
+            }
+        }
+    };
+}
+
+function seekVideoTo(t) {
+    var video = document.getElementById("replayVideo");
+    var card = document.getElementById("videoReplayCard");
+    if (!video || !card || card.style.display === "none") return;
+    var sec = parseFloat(t);
+    if (!isFinite(sec) || sec < 0) return;
+    try {
+        video.currentTime = sec;
+        var p = video.play && video.play();
+        if (p && p.catch) p.catch(function() {}); // 自动播放受限等，忽略
+        if (video.scrollIntoView) video.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    } catch (e) {}
 }
 
 // ========== 正确手型对比渲染（以后端 referenceImages 分组为准）==========
@@ -751,13 +863,15 @@ let resultCache = null;
 // AI Chat — 侧栏精灵 + 划词提问
 // ═══════════════════════════════════════════
 
+let selectedReportText = ""; // 用户在报告中选中的文字（向AI提问时随问题一起发送）
+
 function renderChatPanel() {
     var existingToggle = document.getElementById("chatSidebarToggle");
     if (existingToggle) existingToggle.remove();
     var existingPanel = document.getElementById("chatPanelOverlay");
     if (existingPanel) existingPanel.remove();
-    var existingPopup = document.getElementById("askAiPopup");
-    if (existingPopup) existingPopup.remove();
+    var existingQuote = document.getElementById("quoteAskBtn");
+    if (existingQuote) existingQuote.remove();
 
     // 右侧精灵按钮
     var toggle = document.createElement("button");
@@ -777,6 +891,11 @@ function renderChatPanel() {
         '<h3>🤖 AI 吉他教练</h3>' +
         '<button class="chat-panel-close" id="chatPanelClose">✕</button>' +
         '</div>' +
+        '<div class="chat-ref-bar" id="chatRefBar" style="display:none;">' +
+        '<span class="chat-ref-label">📎 引用报告</span>' +
+        '<span class="chat-ref-text" id="chatRefText"></span>' +
+        '<button class="chat-ref-clear" id="chatRefClear" title="清除引用">✕</button>' +
+        '</div>' +
         '<div class="chat-panel-messages" id="chatPanelMessages">' +
         '<div class="msg-bubble ai">你好！我是你的 AI 吉他教练 🎸<br>对练习报告有任何疑问，或者想了解如何改进，随时问我！<br><br>💡 <b>小技巧：在报告中选中文字，可以快速提问哦</b></div>' +
         '</div>' +
@@ -787,83 +906,129 @@ function renderChatPanel() {
         '</div>';
     document.body.appendChild(overlay);
 
-    // 划词提问弹窗
-    var popup = document.createElement("button");
-    popup.id = "askAiPopup";
-    popup.className = "ask-ai-popup";
-    popup.textContent = "✨ 问 AI";
-    document.body.appendChild(popup);
-
-    // 事件绑定
-    bindChatEvents(toggle, overlay, popup);
+    bindChatEvents(toggle, overlay);
+    initQuoteAsk();
 }
 
-function bindChatEvents(toggle, overlay, popup) {
+function bindChatEvents(toggle, overlay) {
     toggle.addEventListener("click", function () {
         overlay.classList.add("active");
+        refreshChatRefBar();
         document.getElementById("chatPanelInput").focus();
     });
     document.getElementById("chatPanelClose").addEventListener("click", function () {
         overlay.classList.remove("active");
     });
-    overlay.addEventListener("click", function (e) {
-        if (e.target === overlay) overlay.classList.remove("active");
-    });
     document.getElementById("chatPanelSend").addEventListener("click", sendQuestion);
     document.getElementById("chatPanelInput").addEventListener("keydown", function (e) {
         if (e.key === "Enter") sendQuestion();
+    });
+    document.getElementById("chatRefClear").addEventListener("click", function () {
+        selectedReportText = "";
+        refreshChatRefBar();
+        document.getElementById("chatPanelInput").focus();
     });
     document.addEventListener("keydown", function (e) {
         if (e.key === "Escape" && overlay.classList.contains("active")) {
             overlay.classList.remove("active");
         }
     });
-
-    // 划词提问：在报告和检测详情区域监听选中
-    setupTextSelection(popup, overlay);
 }
 
-function setupTextSelection(popup, overlay) {
-    var selContainers = document.querySelectorAll(".report-content, .summary-card, #handIssueList, #audioErrorList");
-    selContainers.forEach(function (container) {
-        if (!container) return;
-        container.addEventListener("mouseup", function (e) {
-            setTimeout(function () {
-                var sel = window.getSelection();
-                var text = (sel && sel.toString().trim()) || "";
-                if (text.length > 2 && text.length < 500) {
-                    var range = sel.getRangeAt(0);
-                    var rect = range.getBoundingClientRect();
-                    popup.style.left = (rect.left + rect.width / 2 - 40) + "px";
-                    popup.style.top = (rect.bottom + window.scrollY + 8) + "px";
-                    popup.style.display = "block";
-                    popup._selectedText = text;
-                } else {
-                    popup.style.display = "none";
-                }
-            }, 10);
-        });
+// 根据当前选中的报告文字刷新引用条显示
+function refreshChatRefBar() {
+    const bar = document.getElementById("chatRefBar");
+    if (!bar) return;
+    const textEl = document.getElementById("chatRefText");
+    const input = document.getElementById("chatPanelInput");
+    if (selectedReportText) {
+        bar.style.display = "";
+        const short = selectedReportText.length > 60 ? selectedReportText.slice(0, 60) + "…" : selectedReportText;
+        textEl.textContent = "「" + short + "」";
+        if (input) input.placeholder = "针对你选中的内容，想问什么？";
+    } else {
+        bar.style.display = "none";
+        if (input) input.placeholder = "输入你的问题...";
+    }
+}
+
+// 选中报告文字 → 浮动"就此段提问"按钮 → 打开 AI 侧栏并带入选文
+function initQuoteAsk() {
+    const btn = document.createElement("button");
+    btn.id = "quoteAskBtn";
+    btn.className = "quote-ask-btn";
+    btn.textContent = "💬 就此段提问";
+    document.body.appendChild(btn);
+    btn.style.display = "none";
+
+    btn.addEventListener("click", () => {
+        const sel = window.getSelection();
+        const text = sel && sel.toString().trim();
+        if (!text) return;
+        selectedReportText = text;
+        sel.removeAllRanges(); // 收起高亮
+        btn.style.display = "none";
+        if (!document.getElementById("chatPanelOverlay")) renderChatPanel();
+        const overlay = document.getElementById("chatPanelOverlay");
+        if (overlay) overlay.classList.add("active");
+        refreshChatRefBar();
+        const input = document.getElementById("chatPanelInput");
+        if (input) input.focus();
     });
 
-    // 点击文档其他地方隐藏弹窗
-    document.addEventListener("mousedown", function (e) {
-        if (e.target !== popup && popup.style.display === "block") {
-            popup.style.display = "none";
-        }
-    });
+    function inResultArea(node) {
+        if (!node) return false;
+        const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+        return el && el.closest && el.closest("#resultSection") != null;
+    }
 
-    // 点击弹窗发送选中文字
-    popup.addEventListener("click", function (e) {
-        e.stopPropagation();
-        var text = popup._selectedText || "";
-        popup.style.display = "none";
-        if (text) {
-            overlay.classList.add("active");
-            var input = document.getElementById("chatPanelInput");
-            input.value = "关于报告中「" + text.substring(0, 80) + (text.length > 80 ? "…" : "") + "」这部分，能帮我分析一下吗？";
-            input.focus();
-        }
+    function positionButton() {
+        const b = document.getElementById("quoteAskBtn");
+        if (!b) return false;
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) return false;
+        const text = sel.toString().trim();
+        if (!text || text.length < 2) return false;
+        const range = sel.getRangeAt(0);
+        if (!inResultArea(range.startContainer)) return false;
+        const rect = range.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) return false;
+        let left = rect.left + rect.width - 40;
+        let top = rect.top - 46;
+        if (top < 10) top = rect.bottom + 10;
+        left = Math.max(10, Math.min(left, window.innerWidth - 170));
+        b.style.left = left + "px";
+        b.style.top = top + "px";
+        b.style.display = "";
+        return true;
+    }
+
+    if (window._quoteAskListenersAdded) return;
+    window._quoteAskListenersAdded = true;
+
+    let hideTimer = null;
+    document.addEventListener("selectionchange", () => {
+        clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => {
+            if (!positionButton()) {
+                const b = document.getElementById("quoteAskBtn");
+                if (b) b.style.display = "none";
+            }
+        }, 120);
     });
+    document.addEventListener("mousedown", (e) => {
+        if (e.target && e.target.closest && e.target.closest("#quoteAskBtn")) return;
+        setTimeout(() => {
+            if (!positionButton()) {
+                const b = document.getElementById("quoteAskBtn");
+                if (b) b.style.display = "none";
+            }
+        }, 150);
+    });
+    window.addEventListener("scroll", () => {
+        const b = document.getElementById("quoteAskBtn");
+        if (b) b.style.display = "none";
+    }, true);
 }
 
 function showChatPanel() {
@@ -883,20 +1048,45 @@ async function sendQuestion() {
 
     document.getElementById('chatPanelSend').disabled = true;
     const streamId = 'streamMsg_' + Date.now();
-    msgs.innerHTML += `<div class="msg-bubble ai" id="${streamId}"></div>`;
+    msgs.innerHTML += `<div class="msg-bubble ai" id="${streamId}"><span class="typing-dots"><span></span><span></span><span></span></span></div>`;
 
     const result = window.currentResult || {};
+    // 带上当前水平/乐器，避免聊天永远按 beginner 处理（后端也会从任务顶层兜底）
+    var chatContext = Object.assign({}, result);
+    try {
+        if (levelSelect && levelSelect.value) chatContext.level = levelSelect.value;
+        if (instrumentSelect && instrumentSelect.value) chatContext.instrument = instrumentSelect.value;
+    } catch (e) {}
+    let revealTimer = null;
+    let streamDone = false;
     try {
         const resp = await fetch(`${API_BASE}/api/ask/stream`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({ task_id: window.currentTaskId, question, context: result })
+            body: JSON.stringify({ task_id: window.currentTaskId, question, context: chatContext, selected_text: selectedReportText })
         });
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
         let fullText = '';
         let buffer = '';
+        let shown = 0;
         const bubble = document.getElementById(streamId);
+
+        // 定时揭示：把已收到的文字按固定节奏逐段渲染，保证"逐字"可见（不受网络一次性到达影响）
+        revealTimer = setInterval(() => {
+            const remaining = fullText.length - shown;
+            if (remaining > 0) {
+                const step = remaining > 60 ? Math.ceil(remaining / 30) : 2;
+                shown = Math.min(fullText.length, shown + step);
+                bubble.innerHTML = renderMarkdown(fullText.slice(0, shown));
+                msgs.scrollTop = msgs.scrollHeight;
+            } else if (streamDone) {
+                clearInterval(revealTimer);
+                revealTimer = null;
+                bubble.innerHTML = renderMarkdown(fullText || '抱歉，老师暂时无法回答。');
+                msgs.scrollTop = msgs.scrollHeight;
+            }
+        }, 30);
 
         while (true) {
             const { done, value } = await reader.read();
@@ -910,8 +1100,6 @@ async function sendQuestion() {
                         const data = JSON.parse(line.slice(6));
                         if (data.chunk) {
                             fullText += data.chunk;
-                            bubble.innerHTML = renderMarkdown(fullText);
-                            msgs.scrollTop = msgs.scrollHeight;
                         }
                     } catch (e) {
                         buffer = line + '\n';
@@ -919,14 +1107,14 @@ async function sendQuestion() {
                 }
             }
         }
-        if (fullText) {
-            bubble.innerHTML = renderMarkdown(fullText);
-        } else {
-            bubble.innerHTML = '抱歉，老师暂时无法回答。';
-        }
+        streamDone = true;
     } catch (e) {
+        if (revealTimer) { clearInterval(revealTimer); revealTimer = null; }
         document.getElementById(streamId).innerHTML = '⚠️ 网络开小差了，稍后再问吧！';
     } finally {
+        // 不能在 finally 里 clearInterval：快速流往往在最后一刻把所有文字一次到齐，
+        // 若清掉 timer，第一拍还没来得及渲染，气泡就永远停在三个点。让揭示器自行揭示完再 clear。
+        streamDone = true;
         document.getElementById('chatPanelSend').disabled = false;
         msgs.scrollTop = msgs.scrollHeight;
     }
@@ -1145,6 +1333,12 @@ function resetUI() {
     progressSection.style.display = "none";
     resultSection.style.display = "none";
     handResultSection.style.display = "none";
+    var replayCard = document.getElementById("videoReplayCard");
+    var replayVideo = document.getElementById("replayVideo");
+    var chipsWrap = document.getElementById("markerChips");
+    if (replayCard) replayCard.style.display = "none";
+    if (replayVideo) { try { replayVideo.pause(); replayVideo.removeAttribute("src"); replayVideo.load(); } catch(e) {} }
+    if (chipsWrap) chipsWrap.innerHTML = "";
     resetProgress();
     resetVideoRecord();
 }

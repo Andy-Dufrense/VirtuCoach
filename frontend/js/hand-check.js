@@ -20,7 +20,15 @@ function switchHandSubmode(submode) {
         if (chordCheckState.selectedChord) {
             chordUploadArea.style.display = "block";
             var displayName = chordCheckState.chordName || chordCheckState.selectedChord;
-            chordInput.value = displayName;
+            if (chordCheckState.chordId) {
+                chordSelect.value = chordCheckState.chordId;
+                chordInputWrap.style.display = "none";
+            } else {
+                // 手动输入的和弦（不在下拉列表里）
+                chordSelect.value = "__other__";
+                chordInputWrap.style.display = "block";
+                chordInput.value = displayName;
+            }
             updateRecordInstructions(chordCheckState.chordId || chordCheckState.selectedChord, displayName);
             if (chordCheckState.recordedBlob) {
                 chordVideoReady.style.display = "block";
@@ -124,9 +132,25 @@ async function loadChordList() {
         console.log("和弦列表加载失败，使用本地降级列表:", e.message);
         availableChords = FALLBACK_CHORDS;
     }
-    chordDatalist.innerHTML = availableChords.map(c =>
-        `<option value="${c.name}">${c.name}</option>`
-    ).join("");
+    // 用原生 <select> 下拉（之前用 input+datalist，部分手机浏览器不弹候选，导致和弦无法选择）
+    var groups = { beginner: [], intermediate: [], advanced: [] };
+    availableChords.forEach(function (c) {
+        var g = groups[c.difficulty] ? c.difficulty : "intermediate";
+        groups[g].push(c);
+    });
+    var labels = { beginner: "入门和弦", intermediate: "进阶和弦", advanced: "高级和弦" };
+    var html = '<option value="">-- 选择和弦 --</option>';
+    ["beginner", "intermediate", "advanced"].forEach(function (k) {
+        if (!groups[k].length) return;
+        html += '<optgroup label="' + labels[k] + '">';
+        groups[k].forEach(function (c) {
+            var label = (c.name || c.id).replace(/和弦$/, "");
+            html += '<option value="' + c.id + '">' + label + '</option>';
+        });
+        html += '</optgroup>';
+    });
+    html += '<option value="__other__">✏️ 其他和弦（手动输入）</option>';
+    chordSelect.innerHTML = html;
 }
 
 var CHORD_STRING_PATTERNS = {
@@ -174,8 +198,8 @@ function onChordInput() {
         var score = 0;
         if (c.id === input) score = 100;
         else if (c.name === input) score = 90;
-        else if (c.id && c.name && input.indexOf(c.id) === 0) score = 80;
         else if (c.name && c.name.replace(/\s+/g, '') === normInput) score = 70;
+        // 注：不再有"前缀匹配"——否则输入 F#m 会错误命中 F（按 F 的知识库检查）
         if (score > bestScore) { bestScore = score; matched = c; }
     }
 
@@ -206,6 +230,79 @@ function onChordInput() {
     chordVideoPreviewWrap.style.display = "none";
 }
 
+function onChordSelect() {
+    var val = chordSelect.value;
+    if (!val) {
+        chordInputWrap.style.display = "none";
+        chordUploadArea.style.display = "none";
+        chordVideoPreviewWrap.style.display = "none";
+        chordVideoReady.style.display = "none";
+        analyzeChordBtn.style.display = "none";
+        chordMatchHint.style.display = "none";
+        chordCheckState.selectedChord = "";
+        chordCheckState.chordId = "";
+        chordCheckState.chordName = "";
+        chordCheckState.hasKnowledge = false;
+        return;
+    }
+    if (val === "__other__") {
+        chordInputWrap.style.display = "block";
+        chordInput.focus();
+        if (chordInput.value.trim()) {
+            onChordInput();
+        } else {
+            chordUploadArea.style.display = "none";
+            chordCheckState.selectedChord = "";
+            chordCheckState.chordId = "";
+            chordCheckState.chordName = "";
+            chordCheckState.hasKnowledge = false;
+        }
+        return;
+    }
+    chordInputWrap.style.display = "none";
+    // 换了和弦 → 旧视频作废（与 onChordInput 行为一致）
+    if (chordCheckState.chordId && chordCheckState.chordId !== val) {
+        chordCheckState.recordedBlob = null;
+        chordCheckState.recordedUrl = null;
+        chordVideoReady.style.display = "none";
+        analyzeChordBtn.style.display = "none";
+    }
+    var matched = null;
+    for (var i = 0; i < availableChords.length; i++) {
+        if (availableChords[i].id === val) { matched = availableChords[i]; break; }
+    }
+    chordCheckState.selectedChord = val;
+    chordCheckState.chordId = val;
+    chordCheckState.chordName = matched ? (matched.name || val).replace(/和弦$/, "") : val;
+    chordCheckState.hasKnowledge = true;
+    chordMatchHint.style.display = "none";
+    updateRecordInstructions(val, chordCheckState.chordName);
+    chordUploadArea.style.display = "block";
+    chordVideoPreviewWrap.style.display = "none";
+    if (chordCheckState.recordedBlob) {
+        chordVideoReady.style.display = "block";
+        analyzeChordBtn.style.display = "inline-block";
+    }
+}
+
+function stopCameraPreview() {
+    // 之前只被调用、从未定义（切换到技巧检查时抛 ReferenceError，
+    // 导致子模式切换后半段逻辑中断）。补上：停止摄像头流并复位预览区。
+    if (chordCheckState.mediaRecorder && chordCheckState.mediaRecorder.state === "recording") {
+        chordCheckState.mediaRecorder.stop();
+    }
+    if (chordCheckState.cameraStream) {
+        chordCheckState.cameraStream.getTracks().forEach(t => t.stop());
+        chordCheckState.cameraStream = null;
+    }
+    if (chordPreview) {
+        chordPreview.srcObject = null;
+        chordPreview.style.display = "none";
+    }
+    var ph = document.getElementById("chordVideoPlaceholder");
+    if (ph) ph.style.display = "flex";
+}
+
 async function startCameraPreview() {
     if (chordCheckState.cameraStream) return;
     try {
@@ -228,7 +325,7 @@ function startChordRecord() {
     var checkTarget = isTechniqueMode ? techniqueCheckState.selectedTechnique : chordCheckState.selectedChord;
 
     if (!checkTarget) {
-        showToast(isTechniqueMode ? "请先选择要检查的技巧" : "请先输入要检查的和弦", "error");
+        showToast(isTechniqueMode ? "请先选择要检查的技巧" : "请先选择要检查的和弦", "error");
         return;
     }
 
@@ -436,6 +533,9 @@ function resetVideoRecord() {
 function handleChordVideoUpload() {
     const file = chordVideoInput.files[0];
     if (!file) return;
+    // 立即复位：否则下次重选同一个文件不会触发 change 事件
+    // （表现为"第一次能上传，第二次双击文件没反应"）
+    chordVideoInput.value = "";
     const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
     if (![".mp4", ".mov", ".webm", ".avi", ".mkv"].includes(ext)) {
         showToast("仅支持视频格式 (MP4/MOV/WEBM等)", "error");
@@ -457,8 +557,8 @@ function handleChordVideoUpload() {
     chordVideoResult.src = (handSubmode === "technique" ? techniqueCheckState.recordedUrl : chordCheckState.recordedUrl);
     chordVideoReady.style.display = "block";
     analyzeChordBtn.style.display = "inline-block";
-    if (handSubmode !== "technique" && !chordInput.value.trim()) {
-        showToast("⚠️ 请先输入要检查的和弦", "");
+    if (handSubmode !== "technique" && !chordCheckState.selectedChord) {
+        showToast("⚠️ 请先选择要检查的和弦", "");
     }
     if (handSubmode === "technique" && !techniqueSelect.value) {
         showToast("⚠️ 请先选择要检查的技巧", "");
@@ -750,13 +850,19 @@ function resetChordUI() {
 
 // ── Hand Check Progress Animation ──
 
+// 假进度曲线：单调递增、渐近逼近上限（封顶 95%，等真实结果回来再跳 100%）。
+// 旧公式 5 + 6t·(1 − t/25) 是开口向下的抛物线——12.5s 升到 ~42% 之后会掉头回落，
+// 这就是"进度条到一半突然回退，然后又突然拉满"的根因。
+function computeHandProgress(elapsed) {
+    var progress = 5 + 90 * (1 - Math.exp(-elapsed / 12));
+    return Math.min(95, Math.max(5, progress));
+}
+
 function startHandProgress(bar, msg) {
     var start = Date.now();
     var timer = setInterval(function () {
         var elapsed = (Date.now() - start) / 1000;
-        // Simulate progress with diminishing speed
-        var progress = Math.min(95, 5 + elapsed * 6 * (1 - elapsed / 25));
-        progress = Math.max(progress, 5);
+        var progress = computeHandProgress(elapsed);
         bar.style.width = progress + "%";
 
         if (progress < 20) {

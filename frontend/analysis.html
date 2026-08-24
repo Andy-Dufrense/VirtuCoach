@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VirtuCoach - 练习分析</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
     <div class="app">
@@ -72,9 +72,8 @@
                         </div>
                         <div class="option-group">
                             <label>变调夹 (capo)</label>
-                            <select id="capoSelect" required>
-                                <option value="" disabled selected>请选择变调夹位置</option>
-                                <option value="0">0品 (无变调夹)</option>
+                            <select id="capoSelect">
+                                <option value="0" selected>0品 (无变调夹，自动识别)</option>
                                 <option value="1">1品</option>
                                 <option value="2">2品</option>
                                 <option value="3">3品</option>
@@ -105,11 +104,16 @@
                     <div id="chordCheckArea">
                     <div class="upload-options">
                         <div class="option-group" style="width:100%;max-width:400px;">
-                            <label>🎯 输入你要检查的和弦</label>
-                            <input type="text" id="chordInput" list="chordDatalist" autocomplete="off"
-                                   placeholder="输入和弦名称搜索，如 C、Em、G..."
-                                   style="padding:10px 14px;border-radius:10px;border:1px solid var(--card-border);background:var(--bg);color:var(--text);font-size:16px;width:100%;">
-                            <datalist id="chordDatalist"></datalist>
+                            <label>🎯 选择你要检查的和弦</label>
+                            <select id="chordSelect"
+                                    style="padding:10px 14px;border-radius:10px;border:1px solid var(--card-border);background:var(--bg);color:var(--text);font-size:16px;width:100%;">
+                                <option value="">-- 选择和弦 --</option>
+                            </select>
+                            <div id="chordInputWrap" style="display:none;margin-top:8px;">
+                                <input type="text" id="chordInput" autocomplete="off"
+                                       placeholder="输入和弦名称，如 C、Em、F#m..."
+                                       style="padding:10px 14px;border-radius:10px;border:1px solid var(--card-border);background:var(--bg);color:var(--text);font-size:16px;width:100%;">
+                            </div>
                             <p style="color:var(--text-dim);font-size:11px;margin-top:4px;">💡 注意区分大小写：<b>C</b> 为大三和弦，<b>Cm</b> 为小三和弦，<b>C</b> ≠ <b>c</b></p>
                             <p id="chordMatchHint" style="color:var(--warning);font-size:12px;margin-top:4px;display:none;">
                                 ⚠️ 该和弦暂无知识库数据，分析将使用通用手型标准
@@ -269,6 +273,14 @@
 
                 <!-- 摘要 -->
                 <div class="summary-card" id="summaryCard"></div>
+
+                <!-- 原视频回放（音频错误时间点可点击跳转） -->
+                <div class="report-card" id="videoReplayCard" style="display:none;">
+                    <h3>🎬 原视频回放</h3>
+                    <video id="replayVideo" controls preload="metadata" playsinline
+                           style="width:100%;max-height:420px;background:#000;border-radius:8px;"></video>
+                    <div id="markerChips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;"></div>
+                </div>
 
                 <!-- 检测详情（放前面） -->
                 <div class="error-list-card" id="errorListCard">
@@ -444,8 +456,8 @@
     </div>
 
     <script src="js/auth.js"></script>
-    <script src="js/hand-check.js?v=14"></script>
-    <script src="app.js?v=14"></script>
+    <script src="js/hand-check.js?v=15"></script>
+    <script src="app.js?v=15"></script>
     <script>
     (function () {
       if (VirtuCoach.isLoggedIn()) {

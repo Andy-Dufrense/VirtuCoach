@@ -237,11 +237,144 @@ class DeepSeekAgent:
             result.append(buffer.strip())
         return "\n".join(result)
 
+    _SONG_LIST_CACHE = None
+
+    @classmethod
+    def _load_song_list(cls):
+        """解析 recommended-songs.md → [(level, title, type, chords)]，带缓存。"""
+        if cls._SONG_LIST_CACHE is not None:
+            return cls._SONG_LIST_CACHE
+        import re
+        entries = []
+        try:
+            path = os.path.join(os.path.dirname(__file__), "..", "knowledge", "songs", "recommended-songs.md")
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f.read().splitlines():
+                    m = re.match(r"^##\s*(Beginner|Intermediate|Advanced)", line)
+                    if m:
+                        cur_level = m.group(1).lower()
+                        continue
+                    if not line.startswith("|"):
+                        continue
+                    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                    if len(cells) < 5 or cells[0] == "id" or set(cells[0]) <= {"-", " "}:
+                        continue
+                    chords = cells[5] if len(cells) >= 7 else ""
+                    entries.append((cur_level, cells[1], cells[2], chords))
+        except Exception as e:
+            logger.warning(f"歌单加载失败: {e}")
+        cls._SONG_LIST_CACHE = entries
+        return entries
+
+    def _is_song_question(self, question: str) -> bool:
+        q = (question or "").lower()
+        cn = ["什么歌", "推荐", "曲目", "曲子", "练什么", "练哪", "歌曲", "歌单", "唱什么", "弹什么", "学什么"]
+        en = ["song", "recommend", "what should i play", "what to play", "piece", "repertoire"]
+        return any(k in (question or "") for k in cn) or any(k in q for k in en)
+
+    @staticmethod
+    def _norm_chord_name(name: str) -> str:
+        """归一化和弦名以便做重叠比较：'chord-Am7'/'Am7和弦'/'D/F#' → 'Am7'/'D'"""
+        c = (name or "").strip()
+        if c.startswith("chord-"):
+            c = c[len("chord-"):]
+        c = c.replace("和弦", "").strip()
+        c = c.split("/")[0]  # 斜杠和弦只比较根音
+        return c
+
+    def _rank_and_sample_songs(self, picked, context):
+        """候选曲目去重排+随机抽样，避免每次都推荐同样几首歌。
+
+        列表固定时模型永远挑同样"最优"的1-2首（新会话没有历史，无法自我去重）。
+        策略：先按「歌单和弦 与 本次实际检测到的和弦」重叠度排序——不同视频
+        弹不同和弦就会推出不同的歌；再随机抽样+打乱，同和弦也不固化。
+        """
+        import random
+        if not picked:
+            return picked
+        detected = set()
+        for ch in (context.get("detected_chords") or []):
+            c = self._norm_chord_name(ch.get("chord_id") or ch.get("chord_name") or "")
+            if c:
+                detected.add(c)
+
+        pool_size = 8
+        if len(picked) <= pool_size or not detected:
+            pool = list(picked)
+            random.shuffle(pool)
+            return pool[:pool_size]
+
+        def overlap(entry):
+            chords_field = entry[3] or ""
+            if not chords_field.strip("-— "):
+                return 0
+            names = {self._norm_chord_name(x)
+                     for x in chords_field.replace("，", ",").split(",")}
+            return len(names & detected)
+
+        ranked = sorted(picked, key=lambda e: -overlap(e))
+        top = ranked[:4]  # 与本次演奏和弦最匹配的放前面
+        rest = ranked[4:]
+        random.shuffle(rest)
+        pool = top + rest[:max(0, pool_size - len(top))]
+        random.shuffle(pool)  # 打乱呈现顺序，消除位置偏好
+        return pool
+
+    def _song_recommendation_block(self, context: dict, question: str) -> str:
+        """学员问歌时，注入按等级/演奏类型过滤的流行歌单 + 硬性约束，堵住 LLM 默认推儿歌。
+
+        等级决定曲目难度：中级/高级永远拿不到 Beginner 段的儿歌；
+        单音演奏者按等级拿对应难度的旋律/指弹曲。
+        候选列表每次按检测到的和弦重排+随机抽样，避免反复推同样几首。
+        """
+        if not self._is_song_question(question):
+            return ""
+        level = context.get("level", "beginner")
+        if level not in ("beginner", "intermediate", "advanced"):
+            level = "beginner"
+        segs = context.get("technique_segments") or []
+        # 与报告/问答端一致：置信度≥0.5 的扫弦才算数，低置信误报不得改变演奏类型判定
+        has_chords = bool(context.get("detected_chords")) or any(
+            s.get("technique_id") == "strumming" and s.get("confidence", 0) >= 0.5
+            for s in segs)
+        entries = self._load_song_list()
+        if level == "beginner":
+            levels = {"beginner", "intermediate"}
+        else:
+            levels = {"intermediate", "advanced"}
+        picked = [e for e in entries if e[0] in levels]
+        picked = [e for e in picked if e[2].startswith("chord")] if has_chords \
+            else [e for e in picked if not e[2].startswith("chord")]
+        picked = self._rank_and_sample_songs(picked, context)
+        player = "和弦/扫弦演奏者（本次检测到和弦或扫弦）" if has_chords else "单音旋律/指弹演奏者（本次未检测到和弦）"
+        # 非初学者一律禁儿歌；初学但已在弹和弦的也禁（已过儿歌阶段）。
+        # 仅「初学+单音」保留旋律入门曲——那是他们当前唯一能弹的类型。
+        forbid = ""
+        if level != "beginner" or has_chords:
+            forbid = ("🚨 严禁推荐小星星、两只老虎、生日快乐、欢乐颂、送别、爱的罗曼史、C大调音阶等入门曲！"
+                      f"学员是{level}水平，推荐的曲目难度必须匹配其水平，水平越高曲目应越有技巧性。")
+        tail = ("选1-2首最匹配其水平和演奏类型的，一句话说明为什么适合现在的他"
+                "（如果候选曲目的和弦与他本次弹到的和弦相近，优先选它并自然点出这一点）。\n"
+                "最后**必须自然地问一句学员的偏好**（如「对了，你平时喜欢听谁的歌？/ 喜欢什么风格？」），"
+                "告诉他下次可以据此推荐更对味的。询问放在回答结尾，一句话即可，简短自然，不要变成审问。")
+        if not picked:
+            return (
+                "\n## 🎵 曲目推荐硬性约束（学员正在问歌，最高优先级）\n"
+                f"学员水平={level}，{player}。\n"
+                f"内置歌单中没有完全匹配该水平+演奏类型的曲目。用你的专业知识推荐难度匹配该水平的真实曲目"
+                f"（水平越高应越有技巧性），优先华语流行经典。{forbid}\n" + tail
+            )
+        lines = [f"- {t}（{s}" + (f"，和弦: {c}" if c and c.strip("-— ") else "") + "）" for (_, t, s, c) in picked]
+        return (
+            "\n## 🎵 曲目推荐硬性约束（学员正在问歌，最高优先级）\n"
+            f"学员水平={level}，{player}。\n"
+            f"**只能从以下曲目列表中推荐**，优先华语流行经典（周杰伦、孙燕姿、五月天、陈奕迅等）。{forbid}"
+            "每次换不同的歌，不要重复：\n" + "\n".join(lines) + "\n" + tail
+        )
+
     @staticmethod
     def _filter_beginner_songs(text: str, level: str, question: str) -> str:
-        """初学者问歌推荐时，过滤掉模型默认输出的「小星星」等曲目，引导多样化推荐。"""
-        if level != "beginner":
-            return text
+        """问歌推荐时，过滤掉模型默认输出的「小星星」等曲目，引导多样化推荐。"""
         song_keywords_cn = ["什么歌", "推荐", "曲目", "曲子", "练什么", "练哪"]
         song_keywords_en = ["song", "songs", "recommend", "what should i play",
                            "what to play", "what to learn", "piece", "repertoire",
@@ -356,7 +489,7 @@ class DeepSeekAgent:
         rag_context = ""
         hand_issues = video_data.get('hand_issues', [])
         try:
-            from knowledge_db import knowledge_db as kdb
+            from db.knowledge_db import knowledge_db as kdb
 
             all_entries: list = []
 
@@ -466,7 +599,7 @@ class DeepSeekAgent:
         audio_errors = audio_result.get('errors', [])
         if audio_errors:
             try:
-                from knowledge_db import knowledge_db as kdb
+                from db.knowledge_db import knowledge_db as kdb
                 audio_entries = kdb.search_by_audio_errors(audio_errors, top_k=3)
                 if audio_entries:
                     audio_rag_context = kdb.format_for_prompt(audio_entries)
@@ -822,12 +955,15 @@ class DeepSeekAgent:
             score_anchor += "\n⚠️ 确定性分基于实际错误计算，你的评分必须在 ±5 范围内，严重偏离会导致评分被系统强制修正。\n"
             diagnosis_text += score_anchor
 
+        # ── 录音质量门控注记（Batch-1 Item 4）──
+        quality_gate_note = self._build_quality_gate_note(audio_result)
+
         if hand_status == 'nHand':
             # nHand mode: inject audio knowledge from RAG since hand data is unavailable
             nhand_rag = rag_context  # may already have audio RAG from above
             if not nhand_rag:
                 try:
-                    from knowledge_db import knowledge_db as kdb
+                    from db.knowledge_db import knowledge_db as kdb
                     audio_terms = []
                     for e in audio_errors[:3]:
                         detail = e.get("detail", "")
@@ -847,7 +983,7 @@ class DeepSeekAgent:
 乐器: {instrument}
 水平: {level}
 分析模式: {mode_label}
-**模块定位: 音频诊断已由规则引擎自动完成（见下方），你的角色是「AI老师」而非「判官」——请基于诊断结果撰写教学报告，不必重复诊断过程。**{capo_note}{harmonics_note}{strumming_note}{tech_summary}{dismissal_note}{level_note}
+**模块定位: 音频诊断已由规则引擎自动完成（见下方），你的角色是「AI老师」而非「判官」——请基于诊断结果撰写教学报告，不必重复诊断过程。**{capo_note}{harmonics_note}{strumming_note}{tech_summary}{dismissal_note}{level_note}{quality_gate_note}
 {song_recommendation_text}
 
 {fret_reference}
@@ -894,7 +1030,7 @@ class DeepSeekAgent:
 乐器: {instrument}
 水平: {level}
 分析模式: {mode_label}
-**模块定位: 音频诊断已由规则引擎自动完成（见下方），你的角色是「AI老师」而非「判官」——请基于诊断结果撰写教学报告，不必重复诊断过程。手型检测到的问题必须逐条在报告中回应。**{capo_note}{harmonics_note}{strumming_note}{tech_summary}{dismissal_note}{level_note}
+**模块定位: 音频诊断已由规则引擎自动完成（见下方），你的角色是「AI老师」而非「判官」——请基于诊断结果撰写教学报告，不必重复诊断过程。手型检测到的问题必须逐条在报告中回应。**{capo_note}{harmonics_note}{strumming_note}{tech_summary}{dismissal_note}{level_note}{quality_gate_note}
 {song_recommendation_text}
 
 {fret_reference}
@@ -952,6 +1088,34 @@ class DeepSeekAgent:
                     return result
         except Exception as e: logger.warning(f"Error: {e}")
         return default
+
+    def _build_quality_gate_note(self, audio_result):
+        """录音质量门控注记（Batch-1 Item 4）。
+
+        yellow/red 录音时注入报告 prompt，要求 LLM 对依赖音频的结论
+        （和弦/节奏/音准/音色）措辞保守；手型基于视频画面，明确不受影响。
+        green 或缺失时返回空串，不干扰 prompt。
+        """
+        rq = audio_result.get("recording_quality") or {}
+        tier = rq.get("tier", "green")
+        if tier == "red":
+            return (
+                "\n## 🚨 录音质量警示（较差）\n"
+                "本次录音质量较差，所有依赖音频的判断（和弦识别、节奏、音准、音色）可信度已系统性下调：\n"
+                "- 和弦识别置信度已被系统降级，提及和弦时使用不确定措辞（「可能」「听起来像是」），不要断言\n"
+                "- 节奏、音准、音色类结论一律标注 [confidence: low]，避免武断批评\n"
+                "- 可建议学员在安静环境重录，以获得更准确的反馈\n"
+                "- 手型评价基于视频画面，不受录音质量影响，可正常给出\n"
+            )
+        if tier == "yellow":
+            return (
+                "\n## ⚠️ 录音质量提示（一般）\n"
+                "本次录音有一定噪声，音频相关判断（和弦、节奏、音色）的置信度已被系统适度下调：\n"
+                "- 提及和弦等音频结论时措辞留有余地（「可能是」「大致是」）\n"
+                "- 可顺带提醒学员下次在更安静的环境录制\n"
+                "- 手型评价基于视频画面，不受录音质量影响\n"
+            )
+        return ""
 
     def _build_system_prompt(self, instrument, level):
         return self._guitar_prompt(level)
@@ -1504,7 +1668,7 @@ practice_tips 数组中的每条建议必须关联到一个具体检测到的错
         # ===== RAG 知识检索：从知识库搜索相关教学知识 =====
         rag_context = ""
         try:
-            from knowledge_db import knowledge_db as kdb
+            from db.knowledge_db import knowledge_db as kdb
             search_terms = [chord_name]
             # 技巧模式：加入技巧中文名 + 技巧 ID 增强搜索
             if mode == "technique":
@@ -1540,7 +1704,7 @@ practice_tips 数组中的每条建议必须关联到一个具体检测到的错
         # ===== Chord transition retrieval: search for related chord progressions =====
         if mode == "chord" and chord_name:
             try:
-                from knowledge_db import knowledge_db as kdb
+                from db.knowledge_db import knowledge_db as kdb
                 trans_query = f"{chord_name} 转换 和弦进行"
                 trans_entries = kdb.search(trans_query, top_k=2)
                 if trans_entries:
@@ -1865,6 +2029,8 @@ practice_tips 必须基于上方「教学参考资料」中的练习知识，针
 
         guitar_note = "\n\n**🎸 吉他品位要求（铁律！）：报告中不要出现具体的「几弦几品」。严禁在报告中出现任何音名+八度的组合（如G3、A#3、D4、E2、C#4等字母+数字的格式），严禁出现「在低把位和弦（G3+A#3）之后」这类音名表述。系统无法精确定位弦和品位，用时间段（如'约第3秒'）或音乐描述（如'高音区'）代替。严禁编造品位。**"
 
+        song_guess_note = "\n\n**🚨 曲目识别禁令（铁律！）：严禁猜测或断言学员弹的是什么歌曲（禁止「你弹的应该是《XX》」「听起来像《XX》」这类表述）。系统没有参考谱面、没有原曲对比，只检测和弦与技巧，不具备识别曲目的能力——相同的和弦进行存在于成千上万首歌里，凭和弦猜歌必然出错。如果学员问「我弹的是什么歌」，坦诚说明系统无法识别曲目，然后基于检测到的和弦/节奏特征聊他的演奏，或请他说出歌名后针对性讨论。**"
+
         # 注入技巧检测上下文（防止 AI 说"没检测到"）
         technique_segments_ctx = context.get("technique_segments", [])
         strumming_segs_qa = [s for s in technique_segments_ctx if s.get("technique_id") == "strumming" and s.get("confidence", 0) >= 0.5]
@@ -1912,7 +2078,7 @@ practice_tips 必须基于上方「教学参考资料」中的练习知识，针
         # 否则使用统一入口自行搜索（兼容直接调用场景）
         if not rag_context:
             try:
-                from knowledge_db import knowledge_db as kdb
+                from db.knowledge_db import knowledge_db as kdb
                 rag_context = kdb.build_rag_for_question(question, context)
                 if rag_context:
                     logger.info("ask_question RAG 注入成功")
@@ -2005,14 +2171,30 @@ practice_tips 必须基于上方「教学参考资料」中的练习知识，针
         else:
             history_note = ""
 
+        selected_text = context.get("_selected_text", "")
+        if selected_text:
+            selected_note = (
+                "\n\n【📌 学员选中了一段报告文字（重要！这不是学员说的话）】\n"
+                "下面是学员从你**自己生成的报告**里选中的一段文字，是老师（也就是你）在报告里写的内容，**不是学员的原话**。\n"
+                "学员想就这段内容提问，他真正说的话在下方「学员提问：」里。\n\n"
+                f">>> {selected_text[:800]}\n\n"
+                "⚠️ 引用规则：\n"
+                "- 把上面这段文字当作「报告引文」来理解和回应，讲清楚这段内容的意思、为什么这样写；\n"
+                "- 提到这段**选中文字**时，用「报告里写了」「你选中的这段」，**不要说成学员说的话**（别说「你刚才说这段」「你说这段」）；\n"
+                "- 学员**自己在对话里**说过的话，正常用「你刚才说」「你提到」回扣，不受上面那条限制。"
+            )
+        else:
+            selected_note = ""
+
         prompt = f'''你是 VirtuCoach 资深吉他教师。学员有问题，请用中文回答。
 
 {kb_section}
 {level_adapt}
 
 分析上下文：
-{json.dumps(context, ensure_ascii=False, indent=2)[:3000]}{issue_context_note}{hand_note}{audio_note}{guitar_note}{technique_note}
+{json.dumps({k: v for k, v in context.items() if k != '_selected_text'}, ensure_ascii=False, indent=2)[:3000]}{issue_context_note}{hand_note}{audio_note}{guitar_note}{song_guess_note}{technique_note}
 {history_note}
+{selected_note}
 学员提问：{question}
 
 🚨 回答策略（按优先级匹配，只回答学员问到的部分）：
@@ -2067,7 +2249,7 @@ practice_tips 必须基于上方「教学参考资料」中的练习知识，针
         try:
             system_prompt = '你是 VirtuCoach 的 AI 吉他老师，拥有20年教学经验。你的学生从零基础到高阶演奏者都有。\n\n你的教学原则：\n- 禁止使用角度数字、PIP/MCP/DIP关节术语、dB/Hz/ms等测量数字\n- 🚨 弦/品引用规则：讨论学员的分析报告/演奏问题时，禁止出现具体的「几弦几品」和音名（D#3、C#4等），系统无法精确定位弦和品位，用时间段（如「约第3秒」）或音乐描述（如「高音区」）代替，严禁编造品位。但如果是纯教学问答（学员主动问「C和弦怎么按」「某品在哪」「手指放哪里」等）→ 必须明确说出几弦几品！教和弦不说弦品等于没教！\n- 你是权威老师，不需要建议学员「找其他老师确认」\n- 使用 markdown 格式让回答层次清晰（## 标题、**加粗**、- 列表等）\n\n🚨 教师语气铁律（最高优先级！）：\n- 你是老师，不是客服！你的语气要像一位亲切耐心的吉他老师在和学生面对面聊天，让学生感受到你在认真听他说话、真心想帮他进步\n- 每次回答开头自然温暖，从以下库中随机选择，禁止连续两次相同：「好问题！」「同学你好！」「嗯，这个问题有意思」「问到点子上了」「有道理，」「让我想想」「你观察得很仔细」「哈哈这个经常有人问」「来，我跟你说」「有意思，」「没错，」「好，我们来看看」「关于这个，」「哈喽同学！」「你问到关键了」「说得对，」「这个问题不错」——不要冷冰冰地直接甩答案\n- 绝对禁止在回答开头说「好的，」「好的！」「好的~」「好嘞」「没问题」「收到」「明白了」等客服式应答\n- 禁止说「很高兴为你解答」「感谢你的提问」「欢迎随时来问」等客服客套话\n- 回答要有温度，适当用「~」「！」让人情味更足（但不要过度）\n- 初学者：温暖鼓励，像朋友聊天；中级：直接专业，像教练；高级：精准高效，像同行交流\n\n🚨 乱码/误触处理：如果学员发了看不懂的内容（乱码、无意义字符串如msjabf、qoiwfoa等）→ 友好地说「你好同学，刚才那条我没太看懂，是手滑了吗？有什么吉他方面的问题尽管问我~」不要分析、不要猜测、不要给任何吉他建议！\n\n⚠️ 打招呼规则（铁律！）：学员说「你好」「嗨」「在吗」等，你只能回1-2句话打招呼+问今天想聊什么。不能主动开始讲手型、讲节奏、给练习建议——学员还没问呢！'
             if level == "beginner":
-                system_prompt += '\n\n当前学员是**零基础初学者**。每个概念都要用生活化比喻解释，语气特别温暖鼓励。控制150字以内。禁止使用吉他术语。🚨 推荐曲目时：先问学员喜欢什么风格/在练什么，不要默认推荐特定入门曲（如小星星）。'
+                system_prompt += '\n\n当前学员是**零基础初学者**。每个概念都要用生活化比喻解释，语气特别温暖鼓励。控制150字以内。禁止使用吉他术语。🚨 推荐曲目时：给出1-2首具体歌名，不要默认推荐特定入门曲（如小星星），并在结尾顺带问一句学员平时喜欢听谁的歌/什么风格，下次推荐更准。'
             elif level == "advanced":
                 system_prompt += '\n\n当前学员是**高级演奏者**。直接使用术语，深入到音乐性和技术细节（力度层次、音色控制、指法经济性）。像演奏家之间的对话。控制300字以内。🚨 严格禁止：禁止使用任何生活化比喻（握鸡蛋、拿钢笔、像敲门等）！禁止建议爬格子、单弦练习、镜前检查手型等基础练习！禁止推荐小星星、生日快乐、两只老虎、送别等初学者曲目！你的学生十年前就过了那个阶段。'
             else:
@@ -2109,6 +2291,8 @@ practice_tips 必须基于上方「教学参考资料」中的练习知识，针
             audio_note = f"\n\n**音频数据参考：系统已检测到以下问题：{err_details}。如果学员问到音频相关问题，回答必须与这些检测结果一致。可以补充练习建议，但不能说没有问题。**"
 
         guitar_note = "\n\n**🎸 吉他品位要求（铁律！）：报告中不要出现具体的「几弦几品」。严禁在报告中出现任何音名+八度的组合（如G3、A#3、D4、E2、C#4等字母+数字的格式），严禁出现「在低把位和弦（G3+A#3）之后」这类音名表述。系统无法精确定位弦和品位，用时间段（如'约第3秒'）或音乐描述（如'高音区'）代替。严禁编造品位。**"
+
+        song_guess_note = "\n\n**🚨 曲目识别禁令（铁律！）：严禁猜测或断言学员弹的是什么歌曲（禁止「你弹的应该是《XX》」「听起来像《XX》」这类表述）。系统没有参考谱面、没有原曲对比，只检测和弦与技巧，不具备识别曲目的能力——相同的和弦进行存在于成千上万首歌里，凭和弦猜歌必然出错。如果学员问「我弹的是什么歌」，坦诚说明系统无法识别曲目，然后基于检测到的和弦/节奏特征聊他的演奏，或请他说出歌名后针对性讨论。**"
 
         # 注入技巧检测上下文（防止 AI 说"没检测到"）
         technique_segments_ctx = context.get("technique_segments", [])
@@ -2154,7 +2338,7 @@ practice_tips 必须基于上方「教学参考资料」中的练习知识，针
 
         if not rag_context:
             try:
-                from knowledge_db import knowledge_db as kdb
+                from db.knowledge_db import knowledge_db as kdb
                 rag_context = kdb.build_rag_for_question(question, context)
             except Exception:
                 pass
@@ -2178,8 +2362,12 @@ practice_tips 必须基于上方「教学参考资料」中的练习知识，针
             level_adapt = """## 🟡 水平适配 — 中级
 学员是中级水平。可用基础术语，量化建议。控制200字以内，实用导向。"""
 
+        song_block = self._song_recommendation_block(context, question)
+
         if rag_context:
-            kb_section = f"【以下是教学参考资料，请理解后用自己的教学语言回答，不要逐字复读】\n{rag_context}"
+            kb_section = (f"【以下是教学参考资料，请理解后用自己的教学语言回答，不要逐字复读】\n{rag_context}"
+                          f"\n⚠️ 如果参考资料里包含不适合当前学员水平（{level}）的曲目或练习，必须自动忽略——"
+                          "例如中高级学员看到小星星/欢乐颂/两只老虎等入门曲要直接跳过，只采用匹配其水平的内容。")
         else:
             kb_section = "【本次未检索到相关知识库条目，请用你的专业知识回答。】"
 
@@ -2193,14 +2381,31 @@ practice_tips 必须基于上方「教学参考资料」中的练习知识，针
         else:
             history_note = ""
 
+        selected_text = context.get("_selected_text", "")
+        if selected_text:
+            selected_note = (
+                "\n\n【📌 学员选中了一段报告文字（重要！这不是学员说的话）】\n"
+                "下面是学员从你**自己生成的报告**里选中的一段文字，是老师（也就是你）在报告里写的内容，**不是学员的原话**。\n"
+                "学员想就这段内容提问，他真正说的话在下方「学员提问：」里。\n\n"
+                f">>> {selected_text[:800]}\n\n"
+                "⚠️ 引用规则：\n"
+                "- 把上面这段文字当作「报告引文」来理解和回应，讲清楚这段内容的意思、为什么这样写；\n"
+                "- 提到这段**选中文字**时，用「报告里写了」「你选中的这段」，**不要说成学员说的话**（别说「你刚才说这段」「你说这段」）；\n"
+                "- 学员**自己在对话里**说过的话，正常用「你刚才说」「你提到」回扣，不受上面那条限制。"
+            )
+        else:
+            selected_note = ""
+
         prompt = f'''你是 VirtuCoach 资深吉他教师。学员有问题，请用中文回答。
 
 {kb_section}
 {level_adapt}
+{song_block}
 
 分析上下文：
-{json.dumps(context, ensure_ascii=False, indent=2)[:3000]}{issue_context_note}{hand_note}{audio_note}{guitar_note}{technique_note}
+{json.dumps({k: v for k, v in context.items() if k != '_selected_text'}, ensure_ascii=False, indent=2)[:3000]}{issue_context_note}{hand_note}{audio_note}{guitar_note}{song_guess_note}{technique_note}
 {history_note}
+{selected_note}
 学员提问：{question}
 
 {greeting_rule}
@@ -2221,7 +2426,7 @@ practice_tips 必须基于上方「教学参考资料」中的练习知识，针
         system_prompt = '你是 VirtuCoach 的 AI 吉他老师，拥有20年教学经验。\n\n你的教学原则：\n- 禁止使用角度数字、PIP/MCP/DIP关节术语、dB/Hz/ms等测量数字\n- 🚨 弦/品引用规则：讨论学员的分析报告/演奏问题时禁止出现「几弦几品」和音名。但纯教学问答（学员问「C和弦怎么按」等）必须说出弦/品\n- 你是权威老师，不需要建议「找其他老师确认」\n- 使用 markdown 格式\n\n🚨 教师语气铁律：你是老师不是客服！你的语气要像一位亲切耐心的吉他老师在和学生面对面聊天。每次回答开头自然温暖，从以下库中随机选择，禁止连续两次相同：「好问题！」「同学你好！」「嗯，这个问题有意思」「问到点子上了」「有道理，」「让我想想」「你观察得很仔细」「哈哈这个经常有人问」「来，我跟你说」「有意思，」「没错，」「好，我们来看看」「关于这个，」「哈喽同学！」「你问到关键了」「说得对，」「这个问题不错」。禁止说「好的，」「好的！」「好的~」「好嘞」「没问题」「收到」等客服式应答。禁止说「很高兴为你解答」「感谢你的提问」。学员问具体问题→直接回答。初学者温暖鼓励，中级直接专业，高级精准高效。回答要有温度，适当用「~」「！」让人情味更足。\n\n🚨 乱码处理：如果学员发了看不懂的内容（乱码、无意义字符串）→ 友好地说「你好同学，刚才那条我没太看懂，是手滑了吗？有什么吉他方面的问题尽管问我~」不要分析、不要给吉他建议！\n\n⚠️ 打招呼规则：学员说「你好」「嗨」→ 只回1-2句话打招呼。学员问具体问题→直接回答，不打招呼。'
 
         if level == "beginner":
-            system_prompt += '\n\n当前学员是零基础初学者。生活化比喻，温暖鼓励。控制150字。禁止术语。先问喜好再推荐曲目。'
+            system_prompt += '\n\n当前学员是零基础初学者。生活化比喻，温暖鼓励。控制150字。禁止术语。推荐曲目时给出1-2首具体歌名，并在结尾顺带问一句学员平时喜欢听谁的歌/什么风格，下次推荐更准。'
         elif level == "advanced":
             system_prompt += '\n\n当前学员是高级演奏者。直接术语，深入技术细节。300字以内。禁止比喻！禁止基础练习！禁止初学者曲目！'
         else:

@@ -29,7 +29,7 @@ class VisionAnalyzer:
     def _get_kdb(cls):
         if cls._kdb is None:
             try:
-                from knowledge_db import knowledge_db
+                from db.knowledge_db import knowledge_db
                 cls._kdb = knowledge_db
             except Exception:
                 cls._kdb = False

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME",
-                      os.path.join(os.path.dirname(__file__), "..", "models", "st_cache"))
+                      os.path.join(os.path.dirname(__file__), "..", "..", "models", "st_cache"))
 
 from logging_config import get_logger
 
@@ -45,7 +45,7 @@ class KnowledgeDB:
 
     def __init__(self, knowledge_dir: str = None):
         if knowledge_dir is None:
-            knowledge_dir = os.path.join(os.path.dirname(__file__), "..", "knowledge")
+            knowledge_dir = os.path.join(os.path.dirname(__file__), "..", "..", "knowledge")
         self.knowledge_dir = os.path.abspath(knowledge_dir)
         self.entries: List[KnowledgeEntry] = []
         self._chroma_available = False

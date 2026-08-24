@@ -52,13 +52,13 @@ from audio_analyzer import AudioAnalyzer
 from video_processor import VideoProcessor
 from deepseek_agent import DeepSeekAgent
 from vision_analyzer import VisionAnalyzer
-from reference_db import get_db
+from db.reference_db import get_db
 from chord_analyzer import ChordAnalyzer
-from feedback_db import init_feedback_db, get_db as get_feedback_db
+from db.feedback_db import init_feedback_db, get_db as get_feedback_db
 from feedback_models import FeedbackUpdate, FeedbackResponse, StatsResponse
-from user_db import init_user_db, get_db as get_user_db
+from db.user_db import init_user_db, get_db as get_user_db
 from user_service import decode_access_token, get_user_by_id
-from practice_db import init_practice_db, get_db as get_practice_db
+from db.practice_db import init_practice_db, get_db as get_practice_db
 
 audio_analyzer = AudioAnalyzer()
 video_processor = VideoProcessor()
@@ -70,7 +70,7 @@ chord_analyzer = ChordAnalyzer()
 
 knowledge_db = None
 try:
-    from knowledge_db import knowledge_db as kdb
+    from db.knowledge_db import knowledge_db as kdb
     knowledge_db = kdb
 except Exception:
     logger.warning("Knowledge DB unavailable — RAG features disabled")
@@ -331,6 +331,7 @@ async def create_feedback(
 @app.get("/api/feedbacks")
 def list_feedbacks(
     project: str = "",
+    category: str = "",
     status: str = "",
     search: str = "",
     sort: str = "newest",
@@ -343,6 +344,9 @@ def list_feedbacks(
     if project:
         conditions.append("project = ?")
         params.append(project)
+    if category:
+        conditions.append("category = ?")
+        params.append(category)
     if status:
         conditions.append("status = ?")
         params.append(status)

@@ -10,7 +10,7 @@ import uuid
 from typing import Optional
 
 from pipeline import FilterContext, create_chord_check_pipeline, dedup_by_content, dedup_by_time
-from reference_db import TECHNIQUE_OPTIONS
+from db.reference_db import TECHNIQUE_OPTIONS
 from logging_config import get_logger
 
 logger = get_logger(__name__)

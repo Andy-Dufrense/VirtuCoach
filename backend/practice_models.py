@@ -29,4 +29,5 @@ class PracticeStatsResponse(BaseModel):
     highest_score: float
     lowest_score: float
     recent_scores: list  # last 10 scores for trend chart
+    recent_7d: int = 0   # sessions in the last 7 days
     by_mode: dict

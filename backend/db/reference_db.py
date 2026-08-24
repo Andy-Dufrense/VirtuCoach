@@ -18,7 +18,7 @@ from logging_config import get_logger
 logger = get_logger(__name__)
 
 # 数据库和图片存储路径
-DB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference_hands")
+DB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "reference_hands")
 DB_PATH = os.path.join(DB_DIR, "references.db")
 IMAGES_DIR = os.path.join(DB_DIR, "images")
 
@@ -468,7 +468,7 @@ class ReferenceDB:
             匹配到的参考图列表
         """
         try:
-            from knowledge_db import knowledge_db as kdb
+            from db.knowledge_db import knowledge_db as kdb
             entries = kdb.retrieve_by_problem(problem_type, top_k=3)
         except ImportError:
             entries = []

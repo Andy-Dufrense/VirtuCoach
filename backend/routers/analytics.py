@@ -14,13 +14,14 @@ from fastapi.responses import Response
 from config import (
     ADMIN_PASSWORD,
     ONLINE_WINDOW_MINUTES,
+    ONLINE_TIMEOUT_SECONDS,
     WILLINGNESS_HIGH,
     WILLINGNESS_LOW,
     WILLINGNESS_WINDOW_DAYS,
 )
-from user_db import get_db as get_user_db
-from practice_db import get_db as get_practice_db
-from feedback_db import get_db as get_feedback_db
+from db.user_db import get_db as get_user_db
+from db.practice_db import get_db as get_practice_db
+from db.feedback_db import get_db as get_feedback_db
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -58,16 +59,18 @@ def _fill_daily(rows, series: list[str]) -> list[int]:
 
 def compute_online(user_conn, now: datetime | None = None) -> dict:
     now = now or datetime.now()
-    cutoff = (now - timedelta(minutes=ONLINE_WINDOW_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+    # 实时在线：online=1 且最近有心跳（与登录拦截口径一致）
+    cutoff = (now - timedelta(seconds=ONLINE_TIMEOUT_SECONDS)).strftime("%Y-%m-%d %H:%M:%S")
     today = now.strftime("%Y-%m-%d")
     week_start = (now - timedelta(days=6)).strftime("%Y-%m-%d")
 
     current_online = user_conn.execute(
-        "SELECT COUNT(*) FROM users WHERE last_activity IS NOT NULL AND last_activity >= ?",
+        "SELECT COUNT(*) FROM users "
+        "WHERE online = 1 AND last_activity IS NOT NULL AND last_activity >= ?",
         [cutoff],
     ).fetchone()[0]
     today_active = user_conn.execute(
-        "SELECT COUNT(*) FROM users WHERE date(last_activity) = ?", [today]
+        "SELECT COUNT(*) FROM users WHERE date(last_login) = ?", [today]
     ).fetchone()[0]
     week_active = user_conn.execute(
         "SELECT COUNT(*) FROM users WHERE date(last_activity) >= ?", [week_start]

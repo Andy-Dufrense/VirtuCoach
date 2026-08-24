@@ -29,8 +29,17 @@ def create_chat_router(deepseek_agent, knowledge_db=None):
         else:
             full_context = {}
 
+        # 分析结果里没有 level/instrument 字段，从 task 顶层补上（否则聊天永远按 beginner 处理）
+        if task:
+            full_context.setdefault("level", task.get("level", "beginner"))
+            full_context.setdefault("instrument", task.get("instrument", "guitar"))
+
         # 前端 chat 请求中的字段（level 等）优先级高于分析结果，支持会话中切换水平
         full_context.update(context)
+
+        selected_text = data.get("selected_text", "")
+        if selected_text:
+            full_context["_selected_text"] = selected_text
 
         # 跟踪对话轮次：第一轮标记 is_first_message=True，后续为 False
         conv_key = f"chat_{task_id}"
@@ -87,7 +96,16 @@ def create_chat_router(deepseek_agent, knowledge_db=None):
         else:
             full_context = {}
 
+        # 分析结果里没有 level/instrument 字段，从 task 顶层补上（否则聊天永远按 beginner 处理）
+        if task:
+            full_context.setdefault("level", task.get("level", "beginner"))
+            full_context.setdefault("instrument", task.get("instrument", "guitar"))
+
         full_context.update(context)
+
+        selected_text = data.get("selected_text", "")
+        if selected_text:
+            full_context["_selected_text"] = selected_text
 
         conv_key = f"chat_{task_id}"
         if not hasattr(router, '_conversation_rounds'):

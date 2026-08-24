@@ -27,7 +27,7 @@ if sys.platform == "win32":
 
 PROJECT_ROOT = Path(__file__).parent.parent
 BACKEND_DIR = PROJECT_ROOT / "backend"
-SITE_PACKAGES = Path("E:/Lib/site-packages")
+SITE_PACKAGES = Path(sys.executable).parent / "Lib" / "site-packages"
 
 CHECKS_PASSED = 0
 CHECKS_FAILED = 0
@@ -61,7 +61,7 @@ def check_python():
 
 
 def check_site_packages():
-    print("\n[E:\\Lib\\site-packages]")
+    print(f"\n[site-packages: {SITE_PACKAGES}]")
     if SITE_PACKAGES.is_dir():
         ok(f"目录存在: {SITE_PACKAGES}")
     else:
@@ -160,7 +160,7 @@ def check_starlette():
             ok(f"starlette=={ver} (兼容 FastAPI 0.104.1)")
         else:
             fail(f"starlette=={ver} (需要 0.27.0，FastAPI 0.104.1 不兼容 >=1.x)")
-            print("  修复: pip install starlette==0.27.0 --target E:/Lib/site-packages --force-reinstall --no-deps")
+            print(f"  修复: pip install starlette==0.27.0 --target {SITE_PACKAGES} --force-reinstall --no-deps")
     except ImportError:
         fail("starlette 未安装")
 

@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Depends
 
-from practice_db import get_db
+from db.practice_db import get_db
 from practice_models import PracticeSessionResponse, PracticeStatsResponse
 from auth_deps import require_user
 
@@ -23,6 +23,11 @@ def create_practice_router():
             total = len(rows)
             scores = [r["overall_score"] for r in rows if r["overall_score"] > 0]
             recent = scores[:10][::-1]  # chronological for chart
+            recent_7d = conn.execute(
+                """SELECT COUNT(*) FROM practice_sessions
+                   WHERE user_id = ? AND date(created_at) >= date('now','localtime','-6 days')""",
+                [current_user.id],
+            ).fetchone()[0]
 
             mode_counts = {}
             for r in rows:
@@ -35,6 +40,7 @@ def create_practice_router():
                 highest_score=round(max(scores), 1) if scores else 0,
                 lowest_score=round(min(scores), 1) if scores else 0,
                 recent_scores=recent,
+                recent_7d=recent_7d,
                 by_mode=mode_counts,
             )
         finally:

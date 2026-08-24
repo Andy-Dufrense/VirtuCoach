@@ -1,7 +1,8 @@
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "feedbacks.db"
+DB_PATH = Path(__file__).parent.parent / "data" / "feedbacks.db"
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def get_db():
@@ -9,6 +10,7 @@ def get_db():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 

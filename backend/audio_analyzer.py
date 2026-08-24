@@ -37,21 +37,6 @@ except ImportError:
     LIBROSA_AVAILABLE = False
     logger.info("librosa 未安装，和弦识别将回退到 basic-pitch 方案")
 
-# DeepChroma CNN（madmom）—— 弱信号场景辅助校验，不替代 chroma_cqt 主链路
-# madmom 0.16.1 依赖已废弃的 np.float 别名，需 monkey-patch
-_DC_AVAILABLE = False
-_CNNChordFeatureProcessor = None
-try:
-    import builtins as _builtins
-    for _dep in ('float', 'int', 'bool', 'complex'):
-        if not hasattr(np, _dep):
-            setattr(np, _dep, getattr(_builtins, _dep, float))
-    from madmom.features.chords import CNNChordFeatureProcessor as _CNNChordFeatureProcessor
-    _DC_AVAILABLE = True
-    logger.info("DeepChroma (madmom CNN) 已加载，将用于弱信号交叉验证")
-except Exception as _e:
-    logger.info(f"DeepChroma 不可用 ({_e})，仅使用 chroma_cqt 主链路")
-
 
 @dataclass
 class AudioFeatures:
@@ -99,7 +84,6 @@ class AudioAnalyzer:
         self.ds_available = False
         self._load_model()
         self._init_deepseek()
-        self._deep_chroma_scores = None
 
     def _load_model(self):
         """加载 basic-pitch 模型"""
@@ -375,7 +359,8 @@ class AudioAnalyzer:
             if mo is not None and notes:
                 try:
                     technique_segments = self.detect_technique_segments(
-                        mo, audio_features, notes, sr=16000
+                        mo, audio_features, notes, sr=16000,
+                        audio_duration=len(audio) / 16000
                     )
                     result["technique_segments"] = technique_segments
                     logger.info(f"技巧检测: {len(technique_segments)} 个时间段")
@@ -405,9 +390,12 @@ class AudioAnalyzer:
                     logger.info(f"Onset cluster分类(频谱): {len(onset_clusters)} 段 → {type_summary}")
 
                     # 只把 strumming 类型的 cluster 补充到 technique_segments
+                    # 与音符/activation路径一致：置信度 >= 0.5 才算数，
+                    # 否则单音旋律上常见的 0.25 低置信误报会污染技巧段
                     spec_strum_segs = []
                     for pat in onset_clusters:
-                        if pat.get("type") == "strumming":
+                        if pat.get("type") == "strumming" and \
+                                pat.get("type_confidence", pat.get("confidence", 0)) >= 0.5:
                             spec_strum_segs.append({
                                 "start_time": pat["start_time"],
                                 "end_time": pat["end_time"],
@@ -477,9 +465,117 @@ class AudioAnalyzer:
                 logger.warning(f"音符技巧检测失败: {e}")
                 result["note_techniques"] = []
 
+            # 5.8 录音质量诊断
+            try:
+                result["recording_quality"] = self._assess_recording_quality(audio)
+            except Exception as e:
+                logger.warning(f"录音质量诊断失败: {e}")
+                result["recording_quality"] = {"tier": "green", "warnings": [], "tips": []}
+
         except Exception as e:
             result["errors"].append({"type": "analysis_error", "msg": str(e)})
             logger.warning(f"分析异常: {traceback.format_exc()}")
+
+        return result
+
+    def _assess_recording_quality(self, audio: np.ndarray) -> Dict:
+        """评估录音质量：chroma清晰度 + 调音偏差 + 频谱质量。
+
+        Returns:
+            {"tier": "green"|"yellow"|"red", "chroma_clarity": str,
+             "chroma_median_active": float, "tuning_ok": bool,
+             "warnings": [...], "tips": [...]}
+        """
+        sr = 16000
+        audio_f32 = audio.astype(np.float32)
+        result = {"tier": "green", "chroma_clarity": "good",
+                  "chroma_median_active": 0, "tuning_ok": True,
+                  "warnings": [], "tips": []}
+
+        try:
+            chroma = librosa.feature.chroma_cqt(y=audio_f32, sr=sr, bins_per_octave=36)
+        except Exception:
+            return result
+
+        # 1. Chroma clarity: median active PCs per frame (>0.4 threshold)
+        active_per_frame = np.sum(chroma > 0.4, axis=0)
+        median_active = float(np.median(active_per_frame))
+        result["chroma_median_active"] = round(median_active, 1)
+
+        if median_active <= 2.5:
+            result["chroma_clarity"] = "good"
+        elif median_active <= 3.5:
+            result["chroma_clarity"] = "marginal"
+        else:
+            result["chroma_clarity"] = "poor"
+
+        # 2. Frame-to-frame stability: how often does the top PC change abruptly?
+        top_bins = np.argmax(chroma, axis=0)
+        abrupt_changes = np.sum(np.abs(np.diff(top_bins.astype(float))) >= 4)
+        change_rate = abrupt_changes / max(len(top_bins) - 1, 1)
+
+        # 3. Tuning check: are mean chroma peaks aligned to 12-TET grid?
+        mean_chroma = np.mean(chroma, axis=1)
+        # Check if the dominant PCs form a clean pattern (Gaussian blur test)
+        # Simple heuristic: proportion of total energy in top 6 PCs
+        sorted_mean = np.sort(mean_chroma)[::-1]
+        top6_ratio = float(np.sum(sorted_mean[:6]) / (np.sum(sorted_mean) + 1e-8))
+        # If energy is too spread out, likely tuning/intonation issues
+        if top6_ratio < 0.60:
+            result["tuning_ok"] = False
+
+        # 4. Spectral quality check
+        try:
+            flatness = librosa.feature.spectral_flatness(y=audio_f32)[0]
+            mean_flatness = float(np.mean(flatness))
+        except Exception:
+            mean_flatness = 0.005
+
+        # 5. Determine overall tier
+        yellow_flags = 0
+        red_flags = 0
+
+        if result["chroma_clarity"] == "poor":
+            red_flags += 1
+            result["warnings"].append(
+                "音频信号噪声较大，和弦识别可能不准确。"
+                "可能原因：环境噪音干扰、房间混响过大、或吉他未标准调弦。")
+            result["tips"].extend([
+                "选择安静环境录制，减少背景噪音",
+                "手机距离吉他30-50cm，避免太远导致信号衰减",
+                "确认吉他已标准调弦（可使用调音器App检查）",
+            ])
+        elif result["chroma_clarity"] == "marginal":
+            yellow_flags += 1
+            result["warnings"].append(
+                "音频信号有一定噪声，可能影响部分和弦的识别精度。")
+
+        if not result["tuning_ok"]:
+            yellow_flags += 1
+            result["warnings"].append(
+                "检测到音高分布异常，可能存在调音偏差或非标准定弦。")
+            if "确认吉他已标准调弦" not in result["tips"]:
+                result["tips"].append("确认吉他已标准调弦（可使用调音器App检查）")
+
+        if change_rate > 0.06:
+            yellow_flags += 1
+            result["warnings"].append(
+                "和弦切换频繁检测到不连贯的chroma跳变，可能有人声或其他乐器干扰。")
+            if "弹唱时尽量靠近麦克风，或尝试纯乐器录制" not in result["tips"]:
+                result["tips"].append("弹唱时尽量靠近麦克风，或尝试纯乐器录制以获得更准确的分析")
+
+        if mean_flatness > 0.01:
+            yellow_flags += 1
+            result["warnings"].append(
+                "频谱平坦度偏高（音调性不足），可能录音设备质量较低或环境回声明显。")
+
+        if red_flags > 0:
+            result["tier"] = "red"
+        elif yellow_flags > 0:
+            result["tier"] = "yellow"
+
+        # Deduplicate tips
+        result["tips"] = list(dict.fromkeys(result["tips"]))
 
         return result
 
@@ -747,7 +843,8 @@ class AudioAnalyzer:
     # ==================== 技巧检测：从 model_output + audio_features ====================
 
     def detect_technique_segments(self, model_output, audio_features: AudioFeatures,
-                                   notes: List[Dict], sr: int = 16000) -> List[Dict]:
+                                   notes: List[Dict], sr: int = 16000,
+                                   audio_duration: float = None) -> List[Dict]:
         """从 pitch activation matrix + audio features 推断技巧时间段。
 
         Args:
@@ -755,6 +852,9 @@ class AudioAnalyzer:
             audio_features: 已计算的 AudioFeatures
             notes: basic-pitch 转录音符
             sr: 采样率
+            audio_duration: 音频总时长（秒）。用于校准 activation matrix 的帧率——
+                basic-pitch 实际输出 ~86fps，与旧假设的 hop=512(31.25fps) 差 2.75 倍，
+                不校准会导致 activation 类时间段（扫弦/泛音/闷音）的时间戳超出视频长度。
 
         Returns:
             [{start_time, end_time, technique_id, confidence}, ...]
@@ -765,10 +865,15 @@ class AudioAnalyzer:
         if n_frames < 10 or len(notes) < 3:
             return segments
 
-        # frame → time mapping: basic-pitch hop_length=512 @16000Hz
+        # frame → time mapping: 优先用实际音频时长校准帧率（实测 basic-pitch ~86fps）。
+        # 兜底才用旧的 hop_length=512 假设。
         hop_length = 512
-        frame_time = lambda f: f * hop_length / sr
-        time_to_frame = lambda t: int(t * sr / hop_length)
+        if audio_duration and audio_duration > 0 and n_frames > 0:
+            frame_time = lambda f: f * audio_duration / n_frames
+            time_to_frame = lambda t: int(t * n_frames / audio_duration)
+        else:
+            frame_time = lambda f: f * hop_length / sr
+            time_to_frame = lambda t: int(t * sr / hop_length)
 
         # Helper: get activation at a specific MIDI pitch over time
         midi_offset = 21  # basic-pitch bins start at MIDI 21 (A0)
@@ -1025,6 +1130,11 @@ class AudioAnalyzer:
 
         原理：扫弦时大量弦同时被触发，pitch activation 矩阵中相邻帧间
         激活的 MIDI pitch bin 数量会突然跳升。这不依赖品位分配，直接分析频谱激活模式。
+
+        ⚠️ 置信度上限 0.45：实测 basic-pitch 的 note 矩阵很稀疏，真扫弦最多也就
+        13 个 bin 同时激活（仅2-3帧），而大声的单音旋律同样能达到 13（8帧）——
+        该信号本身无法区分扫弦与单音。因此 activation 证据只能作为旁证，
+        置信度压到项目通用门槛 0.5 以下，不能单独把演奏定性为扫弦。
         """
         try:
             import numpy as np
@@ -1050,7 +1160,7 @@ class AudioAnalyzer:
                         "start_time": max(0, t - 0.03),
                         "end_time": t + 0.12,
                         "technique_id": "strumming",
-                        "confidence": min(0.75, 0.45 + jump / 40),
+                        "confidence": min(0.45, 0.30 + jump / 40),
                         "source": "activation",
                     })
 
@@ -1089,7 +1199,7 @@ class AudioAnalyzer:
                                     overlaps = True
                                     break
                         if not overlaps:
-                            confidence = min(0.75, 0.35 + sustain_frames * 0.08 + (0.1 if has_attack else 0))
+                            confidence = min(0.45, 0.30 + sustain_frames * 0.05 + (0.05 if has_attack else 0))
                             segments.append({
                                 "start_time": t0,
                                 "end_time": t1,
@@ -1527,6 +1637,15 @@ class AudioAnalyzer:
             scores["strumming"] += 0.10
         if peaks > 5:
             scores["strumming"] += 0.10
+
+        # ── 集中频谱否决：物理上不可能是扫弦 ──
+        # 扫弦=多根弦同时发声，能量分散（实测真扫弦 spread ≥ 1166Hz）；
+        # spread<900Hz 且峰数<1.5 = 能量集中在窄频带 = 单音/旋律。
+        # 修复"单音小星星"类误判：大声的单音旋律也能刷满能量/节奏特征，
+        # 只有频谱集中度能把它和真扫弦分开。
+        if spread < 900 and peaks < 1.5:
+            scores["strumming"] -= 0.30
+            scores["arpeggio"] += 0.10
 
         # ── Rhythm bonus ──
         if ioi_cv < 0.35 and n >= 5:
@@ -2723,7 +2842,6 @@ class AudioAnalyzer:
                         "chroma": chroma,
                         "chord_name": fm.get("chord_name", chord_id),
                         "pcset": pcset,
-                        "strings": strings,
                         "difficulty": fm.get("difficulty", ""),
                         "related_problems": fm.get("related_problems", []),
                         "related_techniques": fm.get("related_techniques", []),
@@ -2733,113 +2851,6 @@ class AudioAnalyzer:
 
         logger.info(f"加载 {len(templates)} 个和弦 chroma 模板")
         return templates
-
-    # ==================== DeepChroma 辅助信号 ====================
-
-    _DEEP_PROTOTYPES = None  # 类级缓存：{chord_id: np.array(128,)}
-
-    @staticmethod
-    def _synthesize_chord_audio(strings, sr=44100, duration=2.0):
-        """从按弦定义合成吉他音色片段，用于 CNN 原型计算。"""
-        open_freqs = [82.41, 110.0, 146.83, 196.0, 246.94, 329.63]  # 6弦→1弦
-        t = np.arange(int(sr * duration), dtype=np.float64) / sr
-        env = np.exp(-3.0 * t)
-        signal = np.zeros(len(t), dtype=np.float64)
-        for i, s in enumerate(strings):
-            if isinstance(s, str) and s.lower() == 'x':
-                continue
-            try:
-                fret = int(s)
-            except (ValueError, TypeError):
-                continue
-            freq = open_freqs[i] * (2.0 ** (fret / 12.0))
-            for h in range(1, 6):
-                signal += (1.0 / h) * np.sin(2 * np.pi * freq * h * t)
-        signal *= env
-        mx = max(np.abs(signal).max(), 0.001)
-        return (signal / mx).astype(np.float32)
-
-    def _get_deep_prototypes(self):
-        """懒加载 DeepChroma 和弦原型向量。每个和弦合成一次 CNN 特征。"""
-        if AudioAnalyzer._DEEP_PROTOTYPES is not None:
-            return AudioAnalyzer._DEEP_PROTOTYPES
-        if not _DC_AVAILABLE:
-            AudioAnalyzer._DEEP_PROTOTYPES = {}
-            return {}
-
-        templates = self._load_chord_chroma_templates()
-        dcp = _CNNChordFeatureProcessor()
-        prototypes = {}
-        for cid, tpl in templates.items():
-            strings = tpl.get("strings", [])
-            if not strings or len(strings) != 6:
-                continue
-            try:
-                synth = self._synthesize_chord_audio(strings)
-                feats = dcp(synth)  # (n_frames, 128)
-                proto = feats.mean(axis=0)  # (128,)
-                proto = proto / (np.linalg.norm(proto) + 1e-8)
-                prototypes[cid] = proto.astype(np.float32)
-            except Exception as e:
-                logger.warning(f"DeepChroma 原型构建失败 {cid}: {e}")
-
-        AudioAnalyzer._DEEP_PROTOTYPES = prototypes
-        logger.info(f"DeepChroma 原型已构建: {len(prototypes)}/{len(templates)} 个和弦")
-        return prototypes
-
-    def _compute_deep_chroma_scores(self, audio_f32: np.ndarray, sr: int,
-                                     chord_ids: list, n_frames: int, hop_length: int):
-        """用 DeepChroma CNN 为每帧计算 23 个和弦的余弦相似度分数。
-
-        Returns:
-            np.ndarray (n_chords × n_frames) 或 None（DeepChroma 不可用时）
-        """
-        if not _DC_AVAILABLE:
-            return None
-        prototypes = self._get_deep_prototypes()
-        if len(prototypes) < 2:
-            return None
-
-        # 确保采样率匹配 madmom 要求（44100 Hz）
-        if sr != 44100:
-            import librosa as _librosa
-            audio_44k = _librosa.resample(audio_f32, orig_sr=sr, target_sr=44100)
-        else:
-            audio_44k = audio_f32
-
-        try:
-            dcp = _CNNChordFeatureProcessor()
-            feats = dcp(audio_44k)  # (n_madmom_frames, 128)
-        except Exception as e:
-            logger.warning(f"DeepChroma 特征提取失败: {e}")
-            return None
-
-        # L2 归一化 CNN 特征
-        feats_norm = feats / (np.linalg.norm(feats, axis=1, keepdims=True) + 1e-8)
-
-        # 对每个和弦原型计算逐帧余弦相似度
-        n_proto = len(chord_ids)
-        n_dc_frames = feats_norm.shape[0]
-        dc_scores = np.zeros((n_proto, n_dc_frames), dtype=np.float32)
-        for i, cid in enumerate(chord_ids):
-            proto = prototypes.get(cid)
-            if proto is None:
-                continue
-            dc_scores[i, :] = np.dot(feats_norm, proto.astype(np.float32))
-
-        # 插值到 chroma 帧率以对齐下游 frame_times
-        if n_dc_frames > 1 and n_dc_frames != n_frames:
-            dc_time = np.arange(n_dc_frames) * (len(audio_44k) / sr / n_dc_frames)
-            chroma_time = librosa.frames_to_time(np.arange(n_frames), sr=sr, hop_length=hop_length)
-            interp = np.zeros((n_proto, n_frames), dtype=np.float32)
-            for i in range(n_proto):
-                interp[i, :] = np.interp(chroma_time, dc_time, dc_scores[i, :],
-                                          left=dc_scores[i, 0], right=dc_scores[i, -1])
-            dc_scores = interp
-
-        return dc_scores
-
-    # ==================== 主链路 Chroma 和弦识别 ====================
 
     def _detect_chords_chroma(self, audio: np.ndarray, sr: int = 16000,
                                capo: int = 0, notes: List[Dict] = None) -> List[Dict]:
@@ -2954,7 +2965,7 @@ class AudioAnalyzer:
             )
 
             # First pass: collect all raw segments (including short ones)
-            min_frames = int(0.85 * sr / hop_length)
+            min_frames = int(0.50 * sr / hop_length)
             raw_segments = []
             i = 0
             while i < n_frames:
@@ -3008,7 +3019,14 @@ class AudioAnalyzer:
                             return "major"
                         return "major"
                     if _chord_quality(cid_a) != _chord_quality(cid_b):
-                        continue
+                        # 同根音例外：D↔Dm 共享2音但 major≠minor blocking 导致
+                        # 碎片段互相不能合并（如 D/Dm/D 三个短段全丢弃→5秒空白）
+                        import re
+                        _a_root = re.match(r'^[A-G][#b]?', cid_a.replace('chord-',''))
+                        _b_root = re.match(r'^[A-G][#b]?', cid_b.replace('chord-',''))
+                        _same_root = (_a_root and _b_root and _a_root.group(0) == _b_root.group(0))
+                        if not _same_root:
+                            continue
                     seg_a["j"] = seg_b["j"]
                     seg_a["seg_len"] = seg_a["j"] - seg_a["i"]
                     seg_a["seg_chroma"] = np.mean(chroma_final[:, seg_a["i"]:seg_a["j"]], axis=1)
@@ -3059,7 +3077,11 @@ class AudioAnalyzer:
                             if cand_complex > best_complex:
                                 _cand_sc -= 0.060 * (cand_complex - best_complex)
                             elif best_complex > cand_complex:
-                                _best_sc -= 0.060 * (best_complex - cand_complex)
+                                # 若简单方 pcset 是复杂方的子集（如 D⊂Bm7），
+                                # 不惩罚复杂方——额外音有真实信号支撑
+                                if not (cand_pcset and _best_pcset_pre
+                                        and cand_pcset.issubset(_best_pcset_pre)):
+                                    _best_sc -= 0.060 * (best_complex - cand_complex)
                         # 同 pcset 和弦：优先选简单三和弦而非斜杠/转位和弦
                         is_slash = "/" in cand_info.get("chord_name", "")
                         if best_candidate is None:
@@ -3097,7 +3119,6 @@ class AudioAnalyzer:
                                         continue
 
                     if best_candidate is None:
-                        i = j
                         continue
                     picked_cid, picked_info, picked_score = best_candidate
                     cid = picked_cid
@@ -3257,7 +3278,7 @@ class AudioAnalyzer:
                         _prev_qual = _chord_quality(detected[i-1].get("chord_id", ""))
                         _cur_qual = _chord_quality(cid)
                         _qual_match = _prev_qual == _cur_qual
-                        if sp >= 3 and sn <= 1 and _qual_match:
+                        if sp >= 3 and sn <= 1:
                             # If current is superset of prev, keep current's identity
                             if prev_pcset and prev_pcset.issubset(cur_pcset) and prev_pcset != cur_pcset:
                                 detected[i-1]["end_time"] = d["end_time"]
@@ -3271,17 +3292,28 @@ class AudioAnalyzer:
                                         f"→ {merged[-1]['chord_name']} (shared {sp}/{sn} with prev/next)")
                             i += 1
                             continue
-                        elif sn >= 3 and sp <= 1 and _qual_match:
-                            # If current is superset of next, merge next into current
-                            if next_pcset and next_pcset.issubset(cur_pcset) and next_pcset != cur_pcset:
-                                detected[i+1]["time"] = d["time"]
-                                detected[i+1]["chord_id"] = d["chord_id"]
-                                detected[i+1]["chord_name"] = d["chord_name"]
+                        elif sn >= 3 and sp <= 1:
+                            # 短段合并：让更长的和弦存活（短段是噪音片段的概率更高）
+                            next_dur = detected[i+1].get("end_time", 0) - detected[i+1].get("time", 0)
+                            if dur >= next_dur:
+                                # 当前段更长 → 当前存活，吸收下一个
+                                merged.append(d)
+                                merged[-1]["end_time"] = detected[i+1].get("end_time", d["end_time"])
+                                merged[-1]["confidence"] = round(max(conf, detected[i+1].get("confidence", 0)), 2)
+                                logger.info(f"Transition merge: {detected[i+1]['chord_name']}[{detected[i+1]['time']:.1f}s-{detected[i+1]['end_time']:.1f}s] "
+                                            f"→ {d['chord_name']} (shared {sp}/{sn} with prev/next, cur longer)")
+                                i += 2
                             else:
-                                detected[i+1]["time"] = d["time"]
-                            logger.info(f"Transition merge: {d['chord_name']}[{d['time']:.1f}s-{d['end_time']:.1f}s] "
-                                        f"→ {detected[i+1]['chord_name']} (shared {sp}/{sn} with prev/next)")
-                            i += 1
+                                # 下一个更长 → 下一个存活，吸收当前
+                                if next_pcset and next_pcset.issubset(cur_pcset) and next_pcset != cur_pcset:
+                                    detected[i+1]["time"] = d["time"]
+                                    detected[i+1]["chord_id"] = d["chord_id"]
+                                    detected[i+1]["chord_name"] = d["chord_name"]
+                                else:
+                                    detected[i+1]["time"] = d["time"]
+                                logger.info(f"Transition merge: {d['chord_name']}[{d['time']:.1f}s-{d['end_time']:.1f}s] "
+                                            f"→ {detected[i+1]['chord_name']} (shared {sp}/{sn} with prev/next, next longer)")
+                                i += 1
                             continue
                     merged.append(d)
                     i += 1
@@ -3316,6 +3348,73 @@ class AudioAnalyzer:
                     logger.info(f"Min-duration filter: {len(detected)}→{len(filtered)} segments")
                 detected = filtered
 
+            # 4.8 maj7→triad 回退：5th的5次泛音物理上落在maj7位置，
+            # 12-bin chroma无法区分真maj7和泛音污染 → 统一回退为三和弦
+            _SEVENTH_TO_TRIAD = {
+                "Cmaj7": "C", "Dmaj7": "D", "Emaj7": "E",
+                "Fmaj7": "F", "Gmaj7": "G", "Amaj7": "A", "Bmaj7": "B",
+                "fmaj7": "F",
+                "C#maj7": "C#", "Dbmaj7": "Db", "Ebmaj7": "Eb",
+                "F#maj7": "F#", "Gbmaj7": "Gb", "Abmaj7": "Ab",
+                "Bbmaj7": "Bb",
+            }
+            for d in detected:
+                cid = d.get("chord_id", "")
+                triad_cid = _SEVENTH_TO_TRIAD.get(cid)
+                if triad_cid and triad_cid in templates:
+                    triad_info = templates[triad_cid]
+                    d["chord_id"] = triad_cid
+                    d["chord_name"] = triad_info.get("chord_name", d["chord_name"])
+                    d["related_problems"] = triad_info.get("related_problems", [])
+                    d["related_techniques"] = triad_info.get("related_techniques", [])
+                    logger.info(f"maj7 downgrade: {cid}→{triad_cid} @t={d.get('time',0):.1f}s")
+
+            # 4.9 间隙填充：扫描 > 1.2s 空白，取段内最佳匹配模板补回遗漏和弦
+            if len(detected) >= 2 and n_frames > 0:
+                filled = []
+                prev_end_f = 0
+                for idx, d in enumerate(detected):
+                    t0 = d.get("time", 0)
+                    gap_start_f = int(t0 * sr / hop_length)
+                    gap_frames = gap_start_f - prev_end_f
+                    gap_dur = gap_frames * hop_length / sr
+                    # 只填充中间间隙（跳过开头空白）且 > 1.2s
+                    if prev_end_f > 0 and gap_dur > 1.2 and gap_frames >= 10:
+                        f0, f1 = prev_end_f, gap_start_f
+                        gap_c = np.mean(chroma_final[:, f0:f1], axis=1)
+                        # 用原始 cosine 相似度（无惩罚），避免复杂度惩罚偏置三和弦
+                        _tpl_vecs = np.array([templates[cid]["chroma"] for cid in chord_ids], dtype=np.float32)
+                        _tpl_norms = np.linalg.norm(_tpl_vecs, axis=1)
+                        _gap_norm = np.linalg.norm(gap_c)
+                        _raw_sims = np.clip(np.dot(_tpl_vecs, gap_c) / (_tpl_norms * _gap_norm + 1e-8), 0, 1)
+                        best_i = int(np.argmax(_raw_sims))
+                        best_cid = chord_ids[best_i]
+                        best_sc = float(_raw_sims[best_i])
+                        if best_sc >= 0.50:
+                            best_info = templates[best_cid]
+                            best_pc = best_info.get("pcset", set())
+                            match_n = sum(1 for pc in best_pc if gap_c[pc] > 0.10)
+                            if match_n >= 2:
+                                gt0 = round(float(frame_times[f0]), 2)
+                                gt1 = round(float(frame_times[min(f1 - 1, n_frames - 1)]), 2)
+                                filled.append({
+                                    "time": gt0, "end_time": gt1,
+                                    "chord_id": best_cid,
+                                    "chord_name": best_info["chord_name"],
+                                    "confidence": round(min(0.70, best_sc), 2),
+                                    "related_problems": best_info.get("related_problems", []),
+                                    "related_techniques": best_info.get("related_techniques", []),
+                                    "_source": "audio",
+                                    "_gap_filled": True,
+                                })
+                                logger.info(f"Gap filled: {best_info['chord_name']} [{gt0:.1f}s-{gt1:.1f}s] "
+                                            f"gap={gap_dur:.1f}s score={best_sc:.3f}")
+                    filled.append(d)
+                    prev_end_f = max(prev_end_f, int(d.get("end_time", t0 + 1) * sr / hop_length))
+                if len(filled) > len(detected):
+                    logger.info(f"Gap fill: {len(detected)}→{len(filled)} segments")
+                detected = filled
+
             logger.info(f"Chroma 和弦识别 (capo={best_capo}): {len(detected)} 个和弦 "
                         + ", ".join(f"{d['chord_name']}({d['confidence']:.2f})" for d in detected[:6]))
             # 存到实例，供 analyze() 读取更新 capo 和 refine_chords_with_notes 使用 chroma 评分
@@ -3323,10 +3422,6 @@ class AudioAnalyzer:
             self._chroma_scores = scores
             self._chroma_frame_times = frame_times
             self._chroma_chord_ids = chord_ids
-            # DeepChroma 辅助信号（不影响主链路）
-            self._deep_chroma_scores = self._compute_deep_chroma_scores(
-                audio_f32, sr, chord_ids, n_frames, hop_length
-            )
             return detected
 
         except Exception as e:
@@ -3450,16 +3545,6 @@ class AudioAnalyzer:
         resolved = []
         prev_cid = None
 
-        # DeepChroma 辅助分数（仅在 chroma 弱信号时介入）
-        dc_scores = getattr(self, '_deep_chroma_scores', None)
-        has_dc = dc_scores is not None and dc_scores.shape[0] == len(chord_ids)
-
-        def _deep_seg(cand_idx: int) -> float:
-            """候选和弦在 [fi:fj] 区间的 DeepChroma 平均分数（0-1）。"""
-            if not has_dc or fi >= fj:
-                return 0.0
-            return float(np.clip(np.mean(dc_scores[cand_idx, fi:fj]), 0, 1))
-
         for chord in detected_chords:
             t0 = chord.get("time", 0)
             t1 = chord.get("end_time", t0 + 1.0)
@@ -3477,14 +3562,6 @@ class AudioAnalyzer:
             top1_cid = chord_ids[top_indices[0]]
             top1_chroma = float(seg_mean[top_indices[0]])
 
-            # 动态权重：chroma 信号弱时 DeepChroma 介入，强时信任主链路
-            def _weights(chroma_sc: float):
-                if has_dc and chroma_sc < 0.45:
-                    return 0.35, 0.25  # w_chroma, w_dc — DeepChroma 升权
-                elif has_dc and chroma_sc < 0.65:
-                    return 0.50, 0.10  # 混合
-                return 0.60, 0.00      # 信任主链路
-
             best_cid = top1_cid
             best_total = -999.0
 
@@ -3493,9 +3570,7 @@ class AudioAnalyzer:
                 chroma_sc = float(seg_mean[cand_idx])
                 note_ev = _note_evidence(cand_cid, t0, t1)
                 prog_b = _progression_bonus(prev_cid, cand_cid)
-                w_chroma, w_dc = _weights(chroma_sc)
-                dc_sc = _deep_seg(cand_idx) if w_dc > 0 else 0.0
-                total = w_chroma * chroma_sc + w_dc * dc_sc + 0.25 * note_ev + 0.15 * prog_b
+                total = 0.60 * chroma_sc + 0.25 * note_ev + 0.15 * prog_b
                 if total > best_total:
                     best_total = total
                     best_cid = cand_cid
@@ -3507,9 +3582,7 @@ class AudioAnalyzer:
                     chroma_sc = float(seg_mean[cand_idx])
                     note_ev = _note_evidence(top1_cid, t0, t1)
                     prog_b = _progression_bonus(prev_cid, top1_cid)
-                    w_chroma, w_dc = _weights(chroma_sc)
-                    dc_sc = _deep_seg(cand_idx) if w_dc > 0 else 0.0
-                    top1_total = w_chroma * chroma_sc + w_dc * dc_sc + 0.25 * note_ev + 0.15 * prog_b
+                    top1_total = 0.60 * chroma_sc + 0.25 * note_ev + 0.15 * prog_b
                     break
 
             if best_cid and best_cid != cur_cid and (best_total - top1_total) > 0.14:

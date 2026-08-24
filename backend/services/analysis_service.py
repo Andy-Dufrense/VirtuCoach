@@ -19,6 +19,7 @@ from services.report_postprocessor import (
     force_audio_section_nosound,
 )
 from services.audio_diagnosis import diagnose
+from config import UPLOAD_DIR
 from pipeline import (
     FilterContext,
     create_freeplay_pipeline,
@@ -131,10 +132,15 @@ class AnalysisService:
             # ===== Step 5: 视频手型检测 =====
             tasks[task_id]["progress"] = 35
             tasks[task_id]["message"] = "正在检测手型..."
+            # 代理视频留存路径：HEVC/高分辨率原片浏览器解不了，分析用的 H.264
+            # 代理顺带保留供结果页回放（零额外转码成本），随任务 TTL 一起清理
+            proxy_dest = os.path.join(UPLOAD_DIR, f"{task_id}_proxy.mp4")
             video_data = await self._run_hand_detection(
                 video_path, audio_result, instrument, technique_hints,
                 detected_chords=detected_chords,
+                proxy_dest=proxy_dest,
             )
+            tasks[task_id]["proxy_path"] = video_data.get("proxy_path") or ""
 
             # ===== Step 5.2: Qwen VL 指板视觉和弦检测 =====
             tasks[task_id]["message"] = "正在用AI视觉识别和弦..."
@@ -270,9 +276,19 @@ class AnalysisService:
             tasks[task_id]["result"] = result
 
             # 已登录用户自动保存练习记录
+            # 注意：result 结构为 {"score": {overall/pitch/rhythm/technique}, "report_markdown": ...}
+            # report_text 必须存字符串（report 本身是 dict，直接绑定会 InterfaceError）
             user_id = tasks[task_id].get("user_id")
             if user_id and self.practice_db_getter:
                 try:
+                    scores = result.get("score", {}) if isinstance(result, dict) else {}
+                    overall = scores.get("overall") or 0
+                    pitch = scores.get("pitch") or 0
+                    rhythm = scores.get("rhythm") or 0
+                    hand = scores.get("technique") or 0
+                    report_md = ""
+                    if isinstance(result, dict):
+                        report_md = result.get("report_markdown") or result.get("summary") or ""
                     conn = self.practice_db_getter()
                     conn.execute(
                         """INSERT INTO practice_sessions
@@ -281,14 +297,15 @@ class AnalysisService:
                             report_text, mode)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         [user_id, os.path.basename(video_path), instrument, level,
-                         title,
-                         result.get("overall_score", 0) if isinstance(result, dict) else 0,
-                         result.get("pitch_score", 0) if isinstance(result, dict) else 0,
-                         result.get("hand_score", 0) if isinstance(result, dict) else 0,
-                         report, "video_analysis"],
+                         title or "",
+                         float(overall),
+                         float(round((pitch + rhythm) / 2)),  # 音频分 = 音准与节奏的均值
+                         float(hand),
+                         str(report_md), "video_analysis"],
                     )
                     conn.commit()
                     conn.close()
+                    logger.info(f"练习记录已保存: user_id={user_id}, overall={overall}")
                 except Exception:
                     logger.warning("保存练习记录失败", exc_info=True)
 
@@ -353,7 +370,10 @@ class AnalysisService:
         tasks[task_id]["progress"] = 30
         tasks[task_id]["message"] = "未检测到音频，尝试检测手型..."
         try:
-            video_data = self.video_processor.process(video_path, [], instrument, force_hand="left")
+            proxy_dest = os.path.join(UPLOAD_DIR, f"{task_id}_proxy.mp4")
+            video_data = self.video_processor.process(
+                video_path, [], instrument, force_hand="left", proxy_dest=proxy_dest)
+            tasks[task_id]["proxy_path"] = video_data.get("proxy_path") or ""
             hand_issues_raw = video_data.get("hand_issues", [])
             analysis_parsed = {}
             try:
@@ -813,7 +833,7 @@ class AnalysisService:
 
         try:
             from chord_classifier import LandmarkChordClassifier
-            from reference_db import ReferenceDB
+            from db.reference_db import ReferenceDB
         except ImportError:
             return detected_chords
 
@@ -1451,7 +1471,8 @@ class AnalysisService:
         return notes
 
     async def _run_hand_detection(self, video_path, audio_result, instrument,
-                                    technique_hints, detected_chords=None):
+                                    technique_hints, detected_chords=None,
+                                    proxy_dest=None):
         loop = asyncio.get_running_loop()
         technique_segments = audio_result.get("technique_segments", [])
         from functools import partial
@@ -1464,6 +1485,7 @@ class AnalysisService:
             technique_segments if technique_segments else None,
             force_hand="left",
             detected_chords=detected_chords if detected_chords else None,
+            proxy_dest=proxy_dest,
         )
         return await loop.run_in_executor(None, process_fn)
 
@@ -2477,9 +2499,12 @@ class AnalysisService:
             # Find nearest FUSED chord for consistency bonus
             # The fused result already did VL+chroma fusion, so it's more reliable
             # than raw chroma candidates. Give its chord a bonus to prevent divergence.
+            # 关键：只取区间包含 issue_time 的和弦，避免邻近高置信度和弦覆盖当前和弦
             fusion_chord_id = None
             for fc in sorted_chords:
-                if abs(fc.get("time", 0) - issue_time) < 2.0:
+                fc_start = fc.get("time", 0)
+                fc_end = fc.get("end_time", fc_start + 2.0)
+                if fc_start <= issue_time <= fc_end:
                     fusion_chord_id = fc.get("chord_id", "")
                     break
 
@@ -2508,12 +2533,18 @@ class AnalysisService:
                 candidate["_note_bonus"] = round(note_bonus, 3)
                 candidate["_vl_bonus"] = round(vl_bonus, 3)
                 candidate["_fusion_bonus"] = round(fusion_bonus, 3)
+                # 区间包含加分：候选区间包含 issue_time 的和弦获得 0.22 加分
+                # 防止高置信度邻近和弦（如 G conf=0.61 邻接）覆盖包含 chords（如 D conf=0.52 包含 4.4s）
+                c_start = candidate.get("time", 0)
+                c_end = candidate.get("end_time", c_start + 2.0)
+                containment_bonus = 0.22 if (c_start <= issue_time <= c_end) else 0.0
+                candidate["_containment_bonus"] = round(containment_bonus, 3)
                 candidate["_adjusted_score"] = round(
-                    candidate["_candidate_score"] - hand_penalty + note_bonus + vl_bonus + fusion_bonus, 3)
+                    candidate["_candidate_score"] - hand_penalty + note_bonus + vl_bonus + fusion_bonus + containment_bonus, 3)
             candidates.sort(key=lambda c: c["_adjusted_score"], reverse=True)
             best = candidates[0]
             cid_log = ", ".join(f"{c['chord_id']}(adj={c['_adjusted_score']:.3f},hand={c['_mismatches']},"
-                               f"note={c['_note_bonus']},vl={c.get('_vl_bonus',0):.2f},fuse={c.get('_fusion_bonus',0):.2f})"
+                               f"note={c['_note_bonus']},vl={c.get('_vl_bonus',0):.2f},fuse={c.get('_fusion_bonus',0):.2f},contain={c.get('_containment_bonus',0):.2f})"
                                for c in candidates[:4])
             logger.info(f"[ref-match] 四重评分 @{issue_time:.1f}s → {cid_log} → 选用: {best['chord_id']}")
             return best
@@ -3422,4 +3453,5 @@ class AnalysisService:
             "beat_info": audio_result.get("beat_info", {}),
             "detected_capo": audio_result.get("detected_capo", 0),
             "content_type": audio_result.get("content_type", "chord"),
+            "recording_quality": audio_result.get("recording_quality", {}),
         }

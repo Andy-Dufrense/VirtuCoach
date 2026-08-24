@@ -16,6 +16,8 @@ from logging_config import get_logger
 logger = get_logger(__name__)
 
 TIMEOUT_SECONDS = 45  # 整个视频处理超时（秒），需覆盖80帧检测+截图
+# 慢解码编码：OpenCV 逐帧 seek 需从关键帧全分辨率解码，1080p60 下每帧 seek 可达秒级
+PROXY_TRIGGER_CODECS = {"hevc", "h265", "vp9", "av1", "mpeg4"}
 
 
 def _pick_best_snapshot_time(group: list, hand_issue_frames: list) -> float:
@@ -91,11 +93,72 @@ class VideoProcessor:
         )
         return self._HandLandmarker.create_from_options(options)
 
+    def _probe_video(self, video_path: str) -> Optional[Dict]:
+        """ffprobe 取编码/分辨率/帧率/时长；失败返回 None（不影响原流程）。"""
+        try:
+            import subprocess
+            out = subprocess.run(
+                ["ffprobe", "-v", "error",
+                 "-show_entries", "stream=codec_name,codec_type,width,height,r_frame_rate:format=duration",
+                 "-of", "json", video_path],
+                capture_output=True, text=True, timeout=30)
+            info = json.loads(out.stdout or "{}")
+            vs = [s for s in info.get("streams", []) if s.get("codec_type") == "video"]
+            if not vs:
+                return None
+            v = vs[0]
+            num, _, den = (v.get("r_frame_rate") or "30/1").partition("/")
+            fps = float(num) / float(den or 1)
+            return {
+                "codec": (v.get("codec_name") or "").lower(),
+                "width": int(v.get("width") or 0),
+                "height": int(v.get("height") or 0),
+                "fps": fps,
+                "duration": float(info.get("format", {}).get("duration") or 0),
+            }
+        except Exception as e:
+            logger.warning(f"ffprobe 失败: {e}")
+            return None
+
+    def _make_proxy_video(self, video_path: str, out_path: Optional[str] = None) -> Optional[str]:
+        """转码为 720p30 H.264 代理视频：seek 快、MediaPipe 输入小，长手机视频不再超时。
+
+        out_path: 给定则直接写到该最终路径（用于把代理留存为可播放的回放视频，
+        避免事后对可能仍被占用的文件做 rename）；否则写临时文件。
+        代理保留音轨（-c:a aac），分析用不上但前端回放需要声音。
+        """
+        import subprocess
+        import tempfile
+        if out_path:
+            proxy = out_path
+        else:
+            fd, proxy = tempfile.mkstemp(suffix=".mp4", prefix="vcproxy_")
+            os.close(fd)
+        try:
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-i", video_path,
+                 "-vf", "scale=-2:720", "-r", "30",
+                 "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+                 "-c:a", "aac", "-b:a", "128k", proxy],
+                capture_output=True, timeout=300)
+            if r.returncode == 0 and os.path.getsize(proxy) > 10000:
+                logger.info(f"已生成代理视频: {os.path.basename(proxy)}")
+                return proxy
+            logger.warning(f"代理转码失败 rc={r.returncode}: {r.stderr[:200]}")
+        except Exception as e:
+            logger.warning(f"代理转码异常: {e}")
+        try:
+            os.remove(proxy)
+        except Exception:
+            pass
+        return None
+
     def process(self, video_path: str, error_timestamps: List[float], instrument: str,
                 technique_hints: Optional[List[str]] = None,
                 technique_segments: Optional[List[Dict]] = None,
                 force_hand: Optional[str] = None,
-                detected_chords: Optional[List[Dict]] = None) -> Dict:
+                detected_chords: Optional[List[Dict]] = None,
+                proxy_dest: Optional[str] = None) -> Dict:
         """处理视频（带超时保护）。
 
         Args:
@@ -104,6 +167,9 @@ class VideoProcessor:
             force_hand: 可选，强制指定手别 ("left" 或 "right")。
             detected_chords: 可选，音频检测到的和弦列表 [{time, chord_id, chord_name, confidence}]，
                             用于 KB 驱动的和弦感知手型检测（Phase 2）。
+            proxy_dest: 可选，代理视频的留存路径。给定时生成的 H.264 代理不删除，
+                        并通过 result["proxy_path"] 返回，供前端回放（HEVC 等浏览器
+                        无法解码的视频用它播放）；不给定时行为不变（临时代理用完即删）。
         """
         result = {
             "frames_analyzed": 0, "total_frames_extracted": 0,
@@ -115,13 +181,29 @@ class VideoProcessor:
         if not self.model_loaded:
             return result
 
+        # 慢解码视频（HEVC/高分辨率/高帧率）先转代理，避免 OpenCV seek 拖垮检测导致超时
+        probe = self._probe_video(video_path)
+        actual_path = video_path
+        proxy_path = None
+        if probe and (probe["codec"] in PROXY_TRIGGER_CODECS
+                      or probe["width"] * probe["height"] > 1280 * 720
+                      or probe["fps"] > 35):
+            proxy_path = self._make_proxy_video(video_path, proxy_dest)
+            if proxy_path:
+                actual_path = proxy_path
+
+        # 动态超时：长视频给足时间，但封顶避免无限等待
+        timeout = TIMEOUT_SECONDS
+        if probe and probe["duration"] > 0:
+            timeout = min(max(TIMEOUT_SECONDS, int(probe["duration"]) * 2 + 60), 480)
+
         try:
             with ThreadPoolExecutor() as pool:
-                future = pool.submit(self._process_internal, video_path, error_timestamps, instrument, technique_hints, technique_segments, force_hand, detected_chords)
+                future = pool.submit(self._process_internal, actual_path, error_timestamps, instrument, technique_hints, technique_segments, force_hand, detected_chords)
                 try:
-                    result = future.result(timeout=TIMEOUT_SECONDS)
+                    result = future.result(timeout=timeout)
                 except TimeoutError:
-                    logger.warning(f"处理超时（{TIMEOUT_SECONDS}s），等待线程完成...")
+                    logger.warning(f"处理超时（{timeout}s），等待线程完成...")
                     try:
                         result = future.result(timeout=15)
                     except Exception:
@@ -133,6 +215,16 @@ class VideoProcessor:
                     traceback.print_exc()
         except Exception as e:
             logger.warning(f"启动失败: {e}")
+
+        if proxy_path:
+            if proxy_dest and proxy_path == proxy_dest:
+                # 留存代理供前端回放（HEVC/高分辨率原片浏览器解不了，代理是 H.264+音轨）
+                result["proxy_path"] = proxy_path
+            else:
+                try:
+                    os.remove(proxy_path)
+                except Exception:
+                    pass  # 超时线程可能仍持有句柄，留给临时目录清理
 
         # 如果没有检测到手，加一个友好的提示
         if not result.get("hand_issues"):
@@ -309,7 +401,7 @@ class VideoProcessor:
                                 cid = chord.get("chord_id", "")
                                 if cid:
                                     try:
-                                        from knowledge_db import knowledge_db as kdb
+                                        from db.knowledge_db import knowledge_db as kdb
                                         chord_ctx = kdb.get_chord_angle_standards(cid)
                                         chord_id_matched = cid
                                     except Exception:

@@ -13,9 +13,9 @@ from datetime import date, datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import user_db
-import practice_db
-import feedback_db
+import db.user_db as user_db
+import db.practice_db as practice_db
+import db.feedback_db as feedback_db
 from user_service import hash_password
 
 SEED = 20260813

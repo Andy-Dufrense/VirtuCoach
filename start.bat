@@ -3,7 +3,6 @@ title VirtuCoach-Graduate
 set PYTHONIOENCODING=utf-8
 set HF_HUB_OFFLINE=1
 set HF_ENDPOINT=https://hf-mirror.com
-set PYTHONPATH=F:\VirtuCoach-Graduate\VirtuCoach-Lib;%PYTHONPATH%
 cd /d F:\VirtuCoach-Graduate
 
 echo.
@@ -14,7 +13,7 @@ echo.
 echo   [*] Starting backend on port 1218 ...
 echo.
 
-start "VirtuCoachGraduate" /B python run.py
+start "VirtuCoachGraduate" /B F:\Python310\python.exe run.py
 
 echo   [*] Waiting for backend to be ready...
 set RETRY=0

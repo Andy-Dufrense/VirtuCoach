@@ -33,7 +33,7 @@
     .score-ok { background:var(--warning-light); color:var(--warning); }
     .score-bad { background:var(--danger-light); color:var(--danger); }
     .report-expand { cursor:pointer; color:var(--primary-light); text-decoration:underline; font-size:13px; }
-    .report-inline { background:var(--bg); border-radius:8px; padding:14px; margin:8px 0; display:none; white-space:pre-wrap; font-size:13px; max-height:300px; overflow-y:auto; }
+    .report-inline { background:var(--bg); border-radius:8px; padding:14px; margin:8px 0; white-space:pre-wrap; font-size:13px; max-height:300px; overflow-y:auto; }
     .pagination { display:flex; gap:6px; justify-content:center; margin-top:20px; }
     .chart-bar-wrap { display:flex; align-items:flex-end; gap:4px; height:120px; padding:8px 0; }
     .chart-bar { flex:1; background:var(--primary); border-radius:4px 4px 0 0; min-width:16px; position:relative; transition:height 0.4s; }
@@ -46,6 +46,14 @@
     .btn-sm { padding:6px 12px; font-size:12px; }
     .btn-danger { background:var(--danger-light); border:1px solid var(--danger); color:var(--danger); }
     .btn-danger:hover { background:rgba(229,57,53,0.18); }
+    .cmp-bar { margin-bottom:12px; padding:10px 14px; background:var(--primary-glow); border:1px dashed var(--primary-light); border-radius:8px; font-size:13px; align-items:center; gap:10px; flex-wrap:wrap; }
+    .cmp-overlay { position:fixed; inset:0; background:rgba(10,12,20,0.55); z-index:200; align-items:center; justify-content:center; padding:20px; }
+    .cmp-modal { background:var(--card-bg); border:1px solid var(--card-border); border-radius:var(--radius-lg); max-width:680px; width:100%; padding:24px; max-height:85vh; overflow-y:auto; }
+    .cmp-table { width:100%; border-collapse:collapse; font-size:14px; margin-top:14px; }
+    .cmp-table th, .cmp-table td { padding:10px 12px; border-bottom:1px solid var(--card-border); text-align:center; }
+    .cmp-table th:first-child, .cmp-table td:first-child { text-align:left; color:var(--text-dim); }
+    .cmp-up { color:var(--success); font-weight:700; }
+    .cmp-down { color:var(--danger); font-weight:700; }
     @media (max-width: 640px) { .hero-actions { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -102,11 +110,27 @@
           <option value="video_analysis">视频分析</option>
           <option value="chord_check">和弦检查</option>
           <option value="technique_check">技巧检查</option>
-          <option value="image_check">图片检查</option>
         </select>
+      </div>
+      <div class="cmp-bar" id="compareBar" style="display:none;">
+        已勾选 <b id="cmpCount">0</b>/2 条记录
+        <button class="btn btn-primary btn-sm" id="cmpGo" onclick="openCompare()" disabled>对比所选</button>
+        <button class="btn btn-secondary btn-sm" onclick="clearCompare()">清空</button>
+        <span style="color:var(--text-dim);">勾选2条记录即可对比分数变化</span>
       </div>
       <div id="historyTable"></div>
       <div class="pagination" id="pagination"></div>
+    </div>
+
+    <!-- Compare modal -->
+    <div class="cmp-overlay" id="cmpOverlay" style="display:none;" onclick="if(event.target===this) closeCompare()">
+      <div class="cmp-modal">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <h3 style="margin:0;">📊 练习记录对比</h3>
+          <button class="btn btn-secondary btn-small" onclick="closeCompare()">关闭</button>
+        </div>
+        <div id="cmpBody"></div>
+      </div>
     </div>
 
     <div class="toast" id="toast"></div>
@@ -117,6 +141,8 @@
     (function () {
       var currentPage = 1;
       var currentMode = "";
+      var sessionsById = {};
+      var cmpSel = [];
 
       // Auth check
       if (!VirtuCoach.requireAuth()) return;
@@ -138,12 +164,13 @@
           var resp = await fetch("/api/practice/stats", {
             headers: VirtuCoach.getAuthHeaders(),
           });
+          if (resp.status === 401) return VirtuCoach.sessionExpired();
           if (!resp.ok) return;
           var s = await resp.json();
           document.getElementById("statSessions").textContent = s.total_sessions;
           document.getElementById("statAvg").textContent = s.average_score || "--";
           document.getElementById("statBest").textContent = s.highest_score || "--";
-          document.getElementById("statRecent").textContent = s.total_sessions;
+          document.getElementById("statRecent").textContent = s.recent_7d != null ? s.recent_7d : s.total_sessions;
 
           // Render chart
           if (s.recent_scores && s.recent_scores.length > 1) {
@@ -167,6 +194,7 @@
           var url = "/api/practice/sessions?page=" + currentPage + "&per_page=15";
           if (currentMode) url += "&mode=" + currentMode;
           var resp = await fetch(url, { headers: VirtuCoach.getAuthHeaders() });
+          if (resp.status === 401) return VirtuCoach.sessionExpired();
           if (!resp.ok) return;
           var data = await resp.json();
 
@@ -177,27 +205,28 @@
             return;
           }
 
-          var html = '<table class="session-table"><thead><tr><th>日期</th><th>类型</th><th>乐器</th><th>曲目/和弦</th><th>分数</th><th>操作</th></tr></thead><tbody>';
+          cmpSel = [];
+          updateCmpBar();
+          var html = '<table class="session-table"><thead><tr><th style="width:28px;" title="勾选对比"></th><th>日期</th><th>类型</th><th>乐器</th><th>曲目/和弦</th><th>分数</th><th>操作</th></tr></thead><tbody>';
           data.items.forEach(function (s) {
-            var modeLabel = { video_analysis: "视频分析", chord_check: "和弦检查", technique_check: "技巧检查", image_check: "图片检查" }[s.mode] || s.mode;
+            sessionsById[s.id] = s;
+            var modeLabel = { video_analysis: "视频分析", chord_check: "和弦检查", technique_check: "技巧检查" }[s.mode] || s.mode;
             var score = s.overall_score || 0;
             var scoreClass = score >= 80 ? "score-good" : score >= 60 ? "score-ok" : "score-bad";
             var date = s.created_at ? s.created_at.replace("T", " ").substring(0, 16) : "";
             html += '<tr>';
+            html += '<td><input type="checkbox" class="cmp-box" id="cmpbox' + s.id + '" onchange="toggleCmp(' + s.id + ', this.checked)" title="勾选用于对比"></td>';
             html += '<td style="white-space:nowrap;">' + date + '</td>';
             html += '<td>' + modeLabel + '</td>';
             html += '<td>' + (s.instrument === "guitar" ? "🎸" : s.instrument) + '</td>';
-            html += '<td>' + (s.chord_or_track || "-") + '</td>';
+            html += '<td>' + escHtml(s.chord_or_track || "-") + '</td>';
             html += '<td><span class="score-badge ' + scoreClass + '">' + score + '</span></td>';
             html += '<td>';
-            if (s.report_text) {
-              html += '<span class="report-expand" onclick="toggleReport(' + s.id + ')">查看报告</span> ';
-            }
+            html += '<span class="report-expand" onclick="toggleReport(' + s.id + ', this)">进入</span> ';
             html += '<button class="btn btn-danger btn-sm" onclick="deleteSession(' + s.id + ')">删除</button>';
             html += '</td></tr>';
-            if (s.report_text) {
-              html += '<tr id="reportRow' + s.id + '" style="display:none;"><td colspan="6"><div class="report-inline">' + escHtml(s.report_text) + '</div></td></tr>';
-            }
+            var reportBody = s.report_text ? escHtml(s.report_text) : '该记录暂无详细报告内容';
+            html += '<tr id="reportRow' + s.id + '" style="display:none;"><td colspan="7"><div class="report-inline">' + reportBody + '</div><div style="margin-top:10px;"><button class="btn btn-secondary btn-sm" onclick="exportReportPDF(' + s.id + ')">📄 导出 PDF</button></div></td></tr>';
           });
           html += '</tbody></table>';
           document.getElementById("historyTable").innerHTML = html;
@@ -214,9 +243,27 @@
         } catch (e) {}
       }
 
-      window.toggleReport = function (id) {
+      window.toggleReport = function (id, el) {
         var row = document.getElementById("reportRow" + id);
-        row.style.display = row.style.display === "none" ? "table-row" : "none";
+        var expanded = row.style.display === "table-row";
+        row.style.display = expanded ? "none" : "table-row";
+        if (el) el.textContent = expanded ? "进入" : "收起";
+      };
+
+      window.exportReportPDF = function (id) {
+        var s = sessionsById[id];
+        if (!s) return;
+        var modeLabel = { video_analysis: "视频分析", chord_check: "和弦检查", technique_check: "技巧检查" }[s.mode] || s.mode;
+        var date = s.created_at ? s.created_at.replace("T", " ").substring(0, 16) : "";
+        var report = s.report_text || "该记录暂无详细报告内容";
+        var meta = "类型：" + modeLabel + "　|　时间：" + date + "　|　曲目/和弦：" + escHtml(s.chord_or_track || "-") + "　|　综合分：" + (s.overall_score || 0);
+        var w = window.open("", "_blank");
+        if (!w) { VirtuCoach.showToast("请允许浏览器弹窗以导出 PDF", "error"); return; }
+        w.document.write('<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>VirtuCoach 练习报告</title>' +
+          '<style>body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;padding:40px;line-height:1.8;color:#222;}h1{font-size:22px;border-bottom:2px solid #333;padding-bottom:10px;}.meta{color:#666;font-size:13px;margin:12px 0 20px;}.report{white-space:pre-wrap;font-size:15px;}</style></head><body>' +
+          '<h1>VirtuCoach 练习报告</h1><div class="meta">' + meta + '</div><div class="report">' + escHtml(report) + '</div>' +
+          '<scr' + 'ipt>window.onload=function(){window.print();}</scr' + 'ipt></body></html>');
+        w.document.close();
       };
 
       window.deleteSession = async function (id) {
@@ -242,6 +289,71 @@
         currentPage = p;
         loadSessions();
         window.scrollTo(0, 0);
+      };
+
+      // ── 记录对比 ──
+      window.toggleCmp = function (id, checked) {
+        if (checked) {
+          if (cmpSel.length >= 2) {
+            document.getElementById("cmpbox" + id).checked = false;
+            VirtuCoach.showToast("对比需勾选2条记录", "error");
+            return;
+          }
+          cmpSel.push(id);
+        } else {
+          cmpSel = cmpSel.filter(function (x) { return x !== id; });
+        }
+        updateCmpBar();
+      };
+
+      function updateCmpBar() {
+        document.getElementById("compareBar").style.display = cmpSel.length ? "flex" : "none";
+        document.getElementById("cmpCount").textContent = cmpSel.length;
+        document.getElementById("cmpGo").disabled = cmpSel.length !== 2;
+      }
+
+      window.clearCompare = function () {
+        cmpSel = [];
+        document.querySelectorAll(".cmp-box").forEach(function (b) { b.checked = false; });
+        updateCmpBar();
+      };
+
+      window.closeCompare = function () {
+        document.getElementById("cmpOverlay").style.display = "none";
+      };
+
+      window.openCompare = function () {
+        if (cmpSel.length !== 2) return;
+        var a = sessionsById[cmpSel[0]], b = sessionsById[cmpSel[1]];
+        if (!a || !b) return;
+        if ((a.created_at || "") > (b.created_at || "")) { var t = a; a = b; b = t; }
+        var modeLabel = function (m) {
+          return { video_analysis: "视频分析", chord_check: "和弦检查", technique_check: "技巧检查" }[m] || m;
+        };
+        var fmtDate = function (s) { return s.created_at ? s.created_at.replace("T", " ").substring(0, 16) : ""; };
+        function row(label, av, bv, withDelta) {
+          var deltaCell;
+          if (withDelta) {
+            var d = Math.round((bv - av) * 10) / 10;
+            var cls = d > 0 ? "cmp-up" : d < 0 ? "cmp-down" : "";
+            var txt = d === 0 ? "持平" : (d > 0 ? "+" + d + " ↑" : d + " ↓");
+            deltaCell = '<td class="' + cls + '">' + txt + "</td>";
+          } else {
+            deltaCell = "<td>—</td>";
+          }
+          return "<tr><td>" + label + "</td><td>" + av + "</td><td>" + bv + "</td>" + deltaCell + "</tr>";
+        }
+        var html = '<table class="cmp-table"><thead><tr><th>项目</th><th>较早记录</th><th>较晚记录</th><th>变化</th></tr></thead><tbody>';
+        html += row("日期", fmtDate(a), fmtDate(b), false);
+        html += row("类型", modeLabel(a.mode), modeLabel(b.mode), false);
+        html += row("曲目/和弦", escHtml(a.chord_or_track || "-"), escHtml(b.chord_or_track || "-"), false);
+        html += row("综合分", a.overall_score, b.overall_score, true);
+        html += row("音频分", a.audio_score, b.audio_score, true);
+        html += row("手型分", a.hand_score, b.hand_score, true);
+        html += "</tbody></table>";
+        html += '<p style="font-size:12px;color:var(--text-dim);margin-top:10px;">变化 = 较晚记录 − 较早记录；↑ 进步，↓ 退步。</p>';
+        document.getElementById("cmpBody").innerHTML = html;
+        document.getElementById("cmpOverlay").style.display = "flex";
       };
 
       function escHtml(s) {

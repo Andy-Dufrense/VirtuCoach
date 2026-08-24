@@ -16,6 +16,9 @@
     .form-group input:focus { outline:none; border-color:var(--primary-light); }
     .field-hint { font-size:11px; color:var(--text-dim); margin-top:3px; }
     .field-error { font-size:11px; color:var(--danger); margin-top:3px; display:none; }
+    .field-status { margin-left:6px; font-size:13px; font-weight:700; }
+    .field-status.ok { color:var(--success); }
+    .field-status.bad { color:var(--danger); }
     .auth-link { text-align:center; margin-top:16px; font-size:14px; color:var(--text-dim); }
     .auth-link a { color:var(--primary-light); text-decoration:none; }
     .auth-link a:hover { text-decoration:underline; }
@@ -32,7 +35,7 @@
         <div class="subtitle">创建你的练习账号</div>
         <form id="registerForm">
           <div class="form-group">
-            <label>用户名</label>
+            <label>用户名 <span class="field-status" id="usernameStatus"></span></label>
             <input type="text" id="username" required placeholder="3-30个字符，支持中英文、数字和下划线" maxlength="30" minlength="3">
             <div class="field-hint">3-30个字符，支持中英文、数字和下划线</div>
             <div class="field-error" id="usernameError"></div>
@@ -43,15 +46,16 @@
             <div class="field-error" id="emailError"></div>
           </div>
           <div class="form-group">
-            <label>密码</label>
+            <label>密码 <span class="field-status" id="passwordStatus"></span></label>
             <div class="pw-wrap">
-              <input type="password" id="password" required placeholder="至少6个字符" minlength="6" maxlength="128">
+              <input type="password" id="password" required placeholder="至少8个字符，含大小写字母和数字" minlength="8" maxlength="128">
               <button type="button" class="pw-toggle" id="pwToggle1">👁</button>
             </div>
+            <div class="field-hint">密码要求：不少于8个字符，且包含大写英文字母、小写英文字母和数字</div>
             <div class="field-error" id="passwordError"></div>
           </div>
           <div class="form-group">
-            <label>确认密码</label>
+            <label>确认密码 <span class="field-status" id="confirmStatus"></span></label>
             <div class="pw-wrap">
               <input type="password" id="confirm" required placeholder="再次输入密码">
               <button type="button" class="pw-toggle" id="pwToggle2">👁</button>
@@ -71,7 +75,7 @@
   <script src="js/auth.js"></script>
   <script>
     (function () {
-      if (localStorage.getItem("virtucoach_token")) {
+      if (sessionStorage.getItem("virtucoach_token")) {
         window.location.href = "/dashboard.html";
       }
 
@@ -87,6 +91,65 @@
           input.type = input.type === "password" ? "text" : "password";
         });
       });
+
+      function setStatus(id, state) {
+        var el = document.getElementById(id);
+        if (state === "ok") { el.textContent = "✓"; el.className = "field-status ok"; }
+        else if (state === "bad") { el.textContent = "✗"; el.className = "field-status bad"; }
+        else { el.textContent = ""; el.className = "field-status"; }
+      }
+
+      var usernameTimer;
+      function validateUsername() {
+        var u = document.getElementById("username").value.trim();
+        if (!u) { setStatus("usernameStatus", ""); showErr("usernameError", ""); return; }
+        if (!/^[a-zA-Z0-9_一-龥]{3,30}$/.test(u)) {
+          setStatus("usernameStatus", "bad");
+          showErr("usernameError", "用户名需3-30个字符，仅支持字母、数字、下划线和中文");
+          return;
+        }
+        showErr("usernameError", "");
+        fetch("/api/auth/check-username?username=" + encodeURIComponent(u))
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (document.getElementById("username").value.trim() !== u) return;
+            if (d.available) { setStatus("usernameStatus", "ok"); showErr("usernameError", ""); }
+            else { setStatus("usernameStatus", "bad"); showErr("usernameError", "用户名已存在"); }
+          })
+          .catch(function () {});
+      }
+
+      function validatePassword() {
+        var p = document.getElementById("password").value;
+        if (!p) { setStatus("passwordStatus", ""); showErr("passwordError", ""); return false; }
+        if (p.length < 8) {
+          setStatus("passwordStatus", "bad"); showErr("passwordError", "密码不少于8个字符"); return false;
+        }
+        if (!(/[A-Z]/.test(p) && /[a-z]/.test(p) && /\d/.test(p))) {
+          setStatus("passwordStatus", "bad"); showErr("passwordError", "密码需同时包含大小写英文字母和数字"); return false;
+        }
+        setStatus("passwordStatus", "ok"); showErr("passwordError", ""); return true;
+      }
+
+      function validateConfirm() {
+        var p = document.getElementById("password").value;
+        var c = document.getElementById("confirm").value;
+        if (!c) { setStatus("confirmStatus", ""); showErr("confirmError", ""); return false; }
+        if (p !== c) {
+          setStatus("confirmStatus", "bad"); showErr("confirmError", "两次密码输入不一致"); return false;
+        }
+        setStatus("confirmStatus", "ok"); showErr("confirmError", ""); return true;
+      }
+
+      document.getElementById("username").addEventListener("input", function () {
+        clearTimeout(usernameTimer);
+        usernameTimer = setTimeout(validateUsername, 400);
+      });
+      document.getElementById("password").addEventListener("input", function () {
+        validatePassword();
+        validateConfirm();
+      });
+      document.getElementById("confirm").addEventListener("input", validateConfirm);
 
       document.getElementById("registerForm").addEventListener("submit", async function (e) {
         e.preventDefault();
@@ -105,8 +168,11 @@
           showErr("emailError", "邮箱格式不正确");
           valid = false;
         } else { showErr("emailError", ""); }
-        if (password.length < 6) {
-          showErr("passwordError", "密码至少6个字符");
+        if (password.length < 8) {
+          showErr("passwordError", "密码不少于8个字符");
+          valid = false;
+        } else if (!(/[A-Z]/.test(password) && /[a-z]/.test(password) && /\d/.test(password))) {
+          showErr("passwordError", "密码需同时包含大小写英文字母和数字");
           valid = false;
         } else { showErr("passwordError", ""); }
         if (password !== confirm) {

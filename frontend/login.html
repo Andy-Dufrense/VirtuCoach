@@ -58,7 +58,7 @@
   <script src="js/auth.js"></script>
   <script>
     (function () {
-      var token = localStorage.getItem("virtucoach_token");
+      var token = sessionStorage.getItem("virtucoach_token");
       if (token) {
         // Already logged in, verify token
         fetch("/api/auth/me", { headers: { Authorization: "Bearer " + token } })
@@ -74,6 +74,10 @@
         e.preventDefault();
         var err = document.getElementById("authError");
         err.style.display = "none";
+        var btn = this.querySelector('button[type="submit"]');
+        var originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "登录中...";
         try {
           var resp = await fetch("/api/auth/login", {
             method: "POST",
@@ -85,14 +89,16 @@
           });
           var data = await resp.json();
           if (!resp.ok) throw new Error(data.detail || "登录失败");
-          localStorage.setItem("virtucoach_token", data.access_token);
+          sessionStorage.setItem("virtucoach_token", data.access_token);
           if (data.user) {
-            localStorage.setItem("virtucoach_user", JSON.stringify(data.user));
+            sessionStorage.setItem("virtucoach_user", JSON.stringify(data.user));
           }
           window.location.href = "/dashboard.html";
         } catch (ex) {
           err.textContent = ex.message;
           err.style.display = "block";
+          btn.disabled = false;
+          btn.textContent = originalText;
         }
       });
     })();

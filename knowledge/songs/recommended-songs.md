@@ -42,6 +42,11 @@ description: 分级练习曲目推荐库。系统根据用户演奏类型（和�
 | confession-balloon | 告白气球 (周杰伦) | chord-strumming | 90 | 切音扫弦，爵士和声色彩，Capo4 | Bmaj7, F#, Ebm7, Emaj7 | percussive-strumming, syncopation |
 | ten-years | 十年 (陈奕迅) | chord-arpeggio | 60 | 4536251进行，Slash和弦，53231323指法 | G, D/F#, Em, C, Am7, B7 | arpeggio, slash-chord, phrasing |
 | suddenly-miss-you | 突然好想你 (五月天) | chord-strumming | 70 | 4536251经典进行，F横按，情绪爆发 | F, G, Em, Am, Dm, C | barre-chord, crescendo-strumming |
+| meet | 遇见 (孙燕姿) | chord-strumming | 76 | 《向左走向右走》经典慢板抒情，和弦循环简单，练和弦切换与扫弦稳定性 | C, G, Am, Em, F | slow-ballad, strumming, chord-transition |
+| starting-to-understand | 开始懂了 (孙燕姿) | chord-arpeggio | 72 | 慢板抒情分解和弦，练指弹基本功与情绪表达 | C, G, Am, Em, F, Dm | arpeggio, expression, dynamics |
+| daughter-love | 女儿情 | single-note | 60 | 《西游记》经典插曲，旋律舒缓优美，单音旋律进阶首选，练乐句呼吸 | — | melody-expression, phrasing, sustain |
+| sea-laugh | 沧海一声笑 | single-note | 72 | 黄霑武侠经典，五声音阶旋律，练旋律连贯与气息 | — | pentatonic-melody, legato |
+| moon-represents | 月亮代表我的心 | single-note | 66 | 邓丽君经典慢歌，单音旋律练音色控制与揉弦 | — | tone-control, vibrato, expression |
 
 ## Advanced — 复杂编曲与高阶技巧
 

@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException, Depends
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException, Depends, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, Response
 
 from auth_deps import get_current_user
 
@@ -14,6 +14,47 @@ router = APIRouter(prefix="/api", tags=["analysis"])
 
 MAX_TASKS = 100  # 最大任务数上限
 TASK_TTL_HOURS = 2  # 任务保留时间（小时）
+
+
+def _parse_range(spec: str, size: int):
+    """解析单段 bytes Range：'a-b' / 'a-' / '-suffix'，返回 (start, end)。
+
+    非法或越界抛 ValueError（由调用方转 416）。多段 Range 只取第一段——
+    浏览器对单段 206 响应完全可接受。
+    """
+    spec = spec.strip()
+    if "," in spec:
+        spec = spec.split(",")[0].strip()
+    if spec.startswith("-"):
+        suffix = int(spec[1:])  # 非法字符抛 ValueError
+        if suffix <= 0:
+            raise ValueError("empty suffix range")
+        return max(0, size - suffix), size - 1
+    start_str, _, end_str = spec.partition("-")
+    start = int(start_str)
+    if start >= size:
+        raise ValueError("range start beyond file size")
+    if end_str == "":
+        return start, size - 1
+    end = min(int(end_str), size - 1)
+    if end < start:
+        raise ValueError("range end before start")
+    return start, end
+
+
+async def _stream_file(path: str, start: int, end: int):
+    """按 1MB 块流式读取文件 [start, end] 区间（aiofiles，不阻塞事件循环）。"""
+    import aiofiles
+    chunk_size = 1024 * 1024
+    async with aiofiles.open(path, "rb") as f:
+        await f.seek(start)
+        remaining = end - start + 1
+        while remaining > 0:
+            chunk = await f.read(min(chunk_size, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
 
 
 def _cleanup_old_tasks(tasks: dict):
@@ -43,15 +84,16 @@ def _cleanup_old_tasks(tasks: dict):
 
 
 def _remove_task(task_id: str, tasks: dict):
-    """安全删除任务，同时清理对应视频文件。"""
+    """安全删除任务，同时清理对应视频文件和回放代理。"""
     task = tasks.get(task_id)
     if task:
-        video_path = task.get("video_path", "")
-        if video_path and os.path.exists(video_path):
-            try:
-                os.remove(video_path)
-            except OSError:
-                pass
+        for key in ("video_path", "proxy_path"):
+            path = task.get(key, "")
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
     tasks.pop(task_id, None)
 
 
@@ -116,7 +158,52 @@ def create_analysis_router(analysis_service, upload_dir, frontend_dir):
             resp["result"] = task["result"]
         if task.get("error_detail"):
             resp["error_detail"] = task["error_detail"]
+        # 可播放文件存在时给出回放地址（代理优先：HEVC 原片浏览器解不了）
+        playable = task.get("proxy_path") or task.get("video_path") or ""
+        if task["status"] == "completed" and playable and os.path.isfile(playable):
+            resp["video_url"] = f"/api/task/{task_id}/video"
         return resp
+
+    @router.get("/task/{task_id}/video")
+    async def get_task_video(task_id: str, request: Request):
+        """流式提供任务视频（H.264 代理优先，否则原片），支持 HTTP Range。
+
+        前端「原视频回放」靠它跳转错误时间点：starlette 0.27 的 FileResponse
+        不支持 Range（206），<video> 无法拖动/跳转，所以这里手写分块流。
+        安全：只通过 tasks 字典查文件路径，绝不从 URL 输入拼路径。
+        """
+        task = router.tasks.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        path = task.get("proxy_path") or task.get("video_path") or ""
+        if not path or not os.path.isfile(path):
+            raise HTTPException(status_code=404, detail="视频文件不存在（可能已被清理）")
+        size = os.path.getsize(path)
+
+        range_header = (request.headers.get("range") or "").strip()
+        if not range_header.startswith("bytes="):
+            return StreamingResponse(
+                _stream_file(path, 0, size - 1),
+                media_type="video/mp4",
+                headers={"Accept-Ranges": "bytes", "Content-Length": str(size)},
+            )
+        try:
+            start, end = _parse_range(range_header[6:], size)
+        except (ValueError, TypeError):
+            return Response(
+                status_code=416,
+                headers={"Content-Range": f"bytes */{size}"},
+            )
+        return StreamingResponse(
+            _stream_file(path, start, end),
+            status_code=206,
+            media_type="video/mp4",
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Range": f"bytes {start}-{end}/{size}",
+                "Content-Length": str(end - start + 1),
+            },
+        )
 
     @router.get("/tasks")
     async def list_tasks():

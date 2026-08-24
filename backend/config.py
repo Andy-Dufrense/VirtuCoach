@@ -44,7 +44,9 @@ MAX_TOTAL_KEYFRAMES = 250     # 绝对安全上限
 ERROR_FRAME_WINDOW = 0.5
 
 # ---- JWT ----
-JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", os.urandom(32).hex())
+# 固定默认密钥：若用随机密钥，每次重启后端所有已登录用户的 token 都会失效
+# （表现为"分析完成了但没保存练习记录"）。生产环境请用 JWT_SECRET_KEY 环境变量覆盖。
+JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "virtucoach-graduate-stable-secret-2026")
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "24"))
 
@@ -57,6 +59,7 @@ ADMIN_PASSWORD = os.environ.get("VIRTUCOACH_ADMIN_PASSWORD", "andy0716")
 
 # ---- admin analytics ----
 ONLINE_WINDOW_MINUTES = 30        # last_activity 在此窗口内视为在线
+ONLINE_TIMEOUT_SECONDS = 90       # 心跳超时：超过此时长无心跳即视为离线
 WILLINGNESS_WINDOW_DAYS = 30      # 使用意愿统计的时间窗口
 WILLINGNESS_HIGH = 70             # ≥ 此分数为高意愿
 WILLINGNESS_LOW = 40              # < 此分数为低意愿

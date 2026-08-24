@@ -13,6 +13,38 @@ CHORDS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
                           "..", "knowledge", "chords")
 
 
+def _norm_score(value) -> float:
+    """手型/图片检查的 LLM 评分是 0-10 分制，练习记录统一存 0-100，
+    否则与视频分析的百分制混在一起会拉垮平均分/趋势/管理端统计。"""
+    v = float(value or 0)
+    return v * 10 if v <= 10 else v
+
+
+def _build_report_text(result: dict) -> str:
+    """把手型检查结果拼成可读报告文本（summary + 问题明细 + 练习建议）。"""
+    parts = []
+    summary = str(result.get("summary") or "").strip()
+    if summary:
+        parts.append(summary)
+    issues = result.get("issues") or []
+    if issues:
+        parts.append("\n【问题明细】")
+        for i, it in enumerate(issues, 1):
+            desc = str(it.get("description") or "").strip()
+            sug = str(it.get("suggestion") or "").strip()
+            line = f"{i}. {desc}"
+            if sug:
+                line += f"\n   建议：{sug}"
+            parts.append(line)
+    tips = result.get("practice_tips") or []
+    if tips:
+        parts.append("\n【练习建议】")
+        for t in tips:
+            if t:
+                parts.append(f"· {t}")
+    return "\n".join(parts).strip()
+
+
 def create_hand_check_router(hand_check_service, upload_dir, practice_db_getter=None):
     """工厂函数"""
 
@@ -52,10 +84,10 @@ def create_hand_check_router(hand_check_service, upload_dir, practice_db_getter=
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     [current_user.id, video_filename, instrument, "beginner",
                      chord or technique,
-                     result.get("overall_score", 0) or result.get("overall_hand_score", 0),
+                     _norm_score(result.get("overall_score", 0) or result.get("overall_hand_score", 0)),
                      0,
-                     result.get("score", 0) or result.get("hand_score", 0),
-                     str(result.get("analysis", "")),
+                     _norm_score(result.get("overall_score", 0) or result.get("overall_hand_score", 0)),
+                     _build_report_text(result),
                      f"chord_check" if mode == "chord" else "technique_check"],
                 )
                 conn.commit()
@@ -174,25 +206,7 @@ def create_hand_check_router(hand_check_service, upload_dir, practice_db_getter=
             "provider": result.get("provider", ""),
         }
 
-        if current_user and practice_db_getter:
-            try:
-                conn = practice_db_getter()
-                conn.execute(
-                    """INSERT INTO practice_sessions
-                       (user_id, video_filename, instrument, skill_level,
-                        chord_or_track, overall_score, audio_score, hand_score,
-                        report_text, mode)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    [current_user.id, image_filename, instrument, "beginner",
-                     check_area or "手型检查",
-                     response["overall_score"], 0, response["overall_score"],
-                     "", "image_check"],
-                )
-                conn.commit()
-                conn.close()
-            except Exception:
-                pass
-
+        # 图片检查是一次性诊断，不计入练习记录（避免10分制数据混入百分制统计）
         return response
 
     return router

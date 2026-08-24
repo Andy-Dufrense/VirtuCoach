@@ -34,7 +34,10 @@
 .overview-stat-card {
     background: var(--card-bg); border: 1px solid var(--card-border);
     border-radius: var(--radius); padding: 20px; text-align: center;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
+.overview-stat-card:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0,0,0,0.08); }
+.overview-stat-card .icon { font-size: 24px; line-height: 1; margin-bottom: 8px; }
 .overview-stat-card .num { font-size: 32px; font-weight: 700; color: var(--primary-dark); }
 .overview-stat-card .label { font-size: 0.82rem; color: var(--text-dim); margin-top: 4px; }
 
@@ -151,6 +154,7 @@
         <!-- Tab 1: Data Overview -->
         <div id="section-overview" class="admin-section active">
             <div class="overview-stats" id="overviewStats"></div>
+            <div id="overviewCharts"></div>
         </div>
 
         <!-- Tab 2: Feedback Management -->
@@ -159,13 +163,12 @@
 
             <div style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:var(--radius);padding:16px;margin-bottom:12px;">
                 <div class="filter-bar">
-                    <select id="filterProject" onchange="loadFeedbacks()">
-                        <option value="">全部项目</option>
-                        <option value="VirtuCoach">VirtuCoach</option>
-                        <option value="AI Music">AI Music</option>
-                        <option value="AI MV">AI MV</option>
+                    <select id="filterCategory" onchange="loadFeedbacks(1)">
+                        <option value="">全部类型</option>
+                        <option value="video_analysis">视频分析</option>
+                        <option value="hand_check">手型检查</option>
                     </select>
-                    <select id="filterStatus" onchange="loadFeedbacks()">
+                    <select id="filterStatus" onchange="loadFeedbacks(1)">
                         <option value="">全部状态</option>
                         <option value="pending">待处理</option>
                         <option value="investigating">处理中</option>
@@ -296,7 +299,7 @@
                     <button class="btn btn-outline btn-sm analytics-type-btn" data-type="willingness" onclick="switchAnalytics('willingness')">💗 使用意愿</button>
                 </div>
                 <div style="display:flex;gap:8px;align-items:center;">
-                    <select id="analyticsDays" style="padding:6px 10px;border:1px solid var(--card-border);border-radius:6px;background:var(--bg);color:var(--text);font-size:0.8rem;">
+                    <select id="analyticsDays" onchange="loadAnalytics()" style="padding:6px 10px;border:1px solid var(--card-border);border-radius:6px;background:var(--bg);color:var(--text);font-size:0.8rem;">
                         <option value="7">近7天</option>
                         <option value="30" selected>近30天</option>
                         <option value="90">近90天</option>
@@ -388,28 +391,59 @@ async function loadOverview() {
     try {
         const res = await fetch(API + '/admin/overview');
         const d = await res.json();
-        document.getElementById('overviewStats').innerHTML = `
+        const cards = [
+            { icon: '👥', label: '用户总数', value: d.total_users, color: '#5c6bc0' },
+            { icon: '✨', label: '今日新增用户', value: d.today_users, color: '#43a047' },
+            { icon: '🎸', label: '练习总次数', value: d.total_sessions, color: '#f59e0b' },
+            { icon: '🔥', label: '今日练习次数', value: d.today_sessions, color: '#8e24aa' },
+            { icon: '💬', label: '反馈总数', value: d.total_feedbacks, color: '#e53935' },
+        ];
+        document.getElementById('overviewStats').innerHTML = cards.map(c => `
             <div class="overview-stat-card">
-                <div class="num">${d.total_users}</div>
-                <div class="label">用户总数</div>
-            </div>
-            <div class="overview-stat-card">
-                <div class="num">${d.today_users}</div>
-                <div class="label">今日新增用户</div>
-            </div>
-            <div class="overview-stat-card">
-                <div class="num">${d.total_sessions}</div>
-                <div class="label">练习总次数</div>
-            </div>
-            <div class="overview-stat-card">
-                <div class="num">${d.today_sessions}</div>
-                <div class="label">今日练习次数</div>
-            </div>
-            <div class="overview-stat-card">
-                <div class="num">${d.total_feedbacks}</div>
-                <div class="label">反馈总数</div>
+                <div class="icon">${c.icon}</div>
+                <div class="num" style="color:${c.color};">${c.value}</div>
+                <div class="label">${c.label}</div>
+            </div>`).join('');
+
+        const chartsWrap = document.getElementById('overviewCharts');
+        if (!window.Chart) {
+            chartsWrap.innerHTML = chartFallbackNote();
+            return;
+        }
+        const token = encodeURIComponent(getToken());
+        const [l, p] = await Promise.all([
+            fetch(API + '/admin/analytics/logins?days=14&admin_token=' + token).then(r => r.ok ? r.json() : null),
+            fetch(API + '/admin/analytics/practice?days=14&admin_token=' + token).then(r => r.ok ? r.json() : null),
+        ]);
+        destroyOverviewCharts();
+        chartsWrap.innerHTML = `
+            <div class="analytics-grid-2">
+                <div class="analytics-card">
+                    <h3>📈 近14天登录趋势</h3>
+                    <div class="analytics-chart-wrap" style="height:260px;"><canvas id="ovChartLogins"></canvas></div>
+                </div>
+                <div class="analytics-card">
+                    <h3>🎸 近14天练习趋势</h3>
+                    <div class="analytics-chart-wrap" style="height:260px;"><canvas id="ovChartPractice"></canvas></div>
+                </div>
             </div>
         `;
+        if (l && l.dates) makeOverviewChart('ovChartLogins', {
+            type: 'line',
+            data: {
+                labels: l.dates.map(s => s.slice(5)),
+                datasets: [{ label: '登录次数', data: l.daily, borderColor: '#5c6bc0', backgroundColor: 'rgba(92,107,192,0.15)', fill: true, tension: 0.3 }],
+            },
+            options: baseChartOptions('次数'),
+        });
+        if (p && p.dates) makeOverviewChart('ovChartPractice', {
+            type: 'bar',
+            data: {
+                labels: p.dates.map(s => s.slice(5)),
+                datasets: [{ label: '练习次数', data: p.daily, backgroundColor: '#f59e0b' }],
+            },
+            options: baseChartOptions('次数'),
+        });
     } catch (err) { /* ignore */ }
 }
 
@@ -507,12 +541,12 @@ async function loadFeedbackStats() {
 
 async function loadFeedbacks(page) {
     if (page) currentPage = page;
-    const project = document.getElementById('filterProject').value;
+    const category = document.getElementById('filterCategory').value;
     const status = document.getElementById('filterStatus').value;
     const search = document.getElementById('filterSearch').value;
 
     const params = new URLSearchParams({ page: currentPage, sort: 'newest' });
-    if (project) params.set('project', project);
+    if (category) params.set('category', category);
     if (status) params.set('status', status);
     if (search) params.set('search', search);
 
@@ -616,6 +650,7 @@ async function updateStatus(id) {
         if (!res.ok) throw new Error('Failed');
         toast('状态已更新', 'success');
         loadFeedbackStats();
+        loadFeedbacks(currentPage);
     } catch (err) {
         toast('更新失败', 'error');
     }
@@ -757,6 +792,7 @@ function parseUA(ua) {
 // ═══════════════ Data Analytics ═══════════════
 let currentAnalytics = 'online';
 let analyticsCharts = [];
+let overviewCharts = [];
 const ANALYTICS_EXPORT_MAP = { online: 'users', logins: 'logins', practice: 'practice', growth: 'users', willingness: 'willingness' };
 const ANALYTICS_PALETTE = ['#5c6bc0', '#e53935', '#f59e0b', '#43a047', '#8e24aa', '#00897b', '#3949ab', '#d81b60'];
 
@@ -774,6 +810,18 @@ function makeChart(canvasId, config) {
     const el = document.getElementById(canvasId);
     if (!el) return;
     analyticsCharts.push(new Chart(el.getContext('2d'), config));
+}
+
+function makeOverviewChart(canvasId, config) {
+    if (!window.Chart) return;
+    const el = document.getElementById(canvasId);
+    if (!el) return;
+    overviewCharts.push(new Chart(el.getContext('2d'), config));
+}
+
+function destroyOverviewCharts() {
+    overviewCharts.forEach(c => { try { c.destroy(); } catch (e) { /* ignore */ } });
+    overviewCharts = [];
 }
 
 function chartFallbackNote() {
@@ -854,8 +902,8 @@ function renderOnline(d) {
         </tr>`).join('') : emptyRow(3);
     content.innerHTML = `
         <div class="overview-stats">
-            <div class="overview-stat-card"><div class="num">${d.current_online}</div><div class="label">当前在线（近${d.online_window_minutes}分钟活跃）</div></div>
-            <div class="overview-stat-card"><div class="num">${d.today_active}</div><div class="label">今日活跃用户</div></div>
+            <div class="overview-stat-card"><div class="num">${d.current_online}</div><div class="label">当前在线</div></div>
+            <div class="overview-stat-card"><div class="num">${d.today_active}</div><div class="label">今日登录用户</div></div>
             <div class="overview-stat-card"><div class="num">${d.week_active}</div><div class="label">近7日活跃用户</div></div>
         </div>
         <div class="analytics-card">

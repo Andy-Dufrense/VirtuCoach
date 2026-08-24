@@ -288,6 +288,18 @@ li { padding: 6px 0; font-size: 14px; }
 .severity-cosmetic { border-left-color: var(--primary-light); background: rgba(92,107,192,0.10); }
 .severity-cosmetic b { color: var(--primary-dark); }
 .err-time { color: var(--text-dim); font-size: 12.5px; margin-left: 6px; white-space: nowrap; }
+.err-time.seekable { cursor: pointer; text-decoration: underline dotted; }
+.err-time.seekable:hover { color: var(--primary); }
+
+/* ── 原视频回放芯片 ── */
+.marker-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 6px 12px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--card-border); background: var(--bg);
+    color: var(--text); font-size: 13px; transition: all 0.15s;
+}
+.marker-chip:hover { border-color: var(--primary); color: var(--primary-dark); background: var(--primary-glow); }
+.marker-chip.active { border-color: var(--primary); background: var(--primary); color: #fff; }
 
 /* ── Report ── */
 .report-content { line-height: 1.85; font-size: 15px; color: var(--text); }
@@ -324,9 +336,35 @@ li { padding: 6px 0; font-size: 14px; }
 .msg-bubble {
     padding: 10px 14px; border-radius: 12px; margin: 6px 0; max-width: 85%;
     font-size: 14px; line-height: 1.5;
+    align-self: flex-start;
 }
-.msg-bubble.user { background: var(--primary); color: #fff; margin-left: auto; border-bottom-right-radius: 4px; }
-.msg-bubble.ai { background: var(--bg); color: var(--text); border-bottom-left-radius: 4px; }
+.msg-bubble.user { background: var(--primary); color: #fff; align-self: flex-end; border-bottom-right-radius: 4px; }
+.msg-bubble.ai { background: var(--bg); color: var(--text-bright); border-bottom-left-radius: 4px; }
+/* AI 回复 markdown 排版（字色加深，与报告一致） */
+.msg-bubble.ai h2 { font-size: 15px; margin: 10px 0 6px 0; padding-bottom: 4px; border-bottom: 1px solid var(--card-border); color: var(--text-bright); }
+.msg-bubble.ai h3 { font-size: 14px; margin: 8px 0 4px 0; color: var(--primary-dark); }
+.msg-bubble.ai p { margin: 4px 0; font-size: 14px; line-height: 1.7; color: var(--text-bright); }
+.msg-bubble.ai ul { padding-left: 1.5em; margin: 4px 0; }
+.msg-bubble.ai li { margin: 2px 0; font-size: 14px; line-height: 1.6; color: var(--text-bright); }
+.msg-bubble.ai strong { font-weight: 700; color: var(--text-bright); }
+.msg-bubble.ai code { font-size: 13px; background: var(--card-bg); padding: 1px 4px; border-radius: 3px; color: var(--primary-dark); }
+.msg-bubble.ai blockquote { border-left: 3px solid var(--primary); padding: 4px 10px; margin: 6px 0; background: var(--card-hover); font-size: 14px; line-height: 1.6; color: var(--text-bright); }
+.msg-bubble.ai blockquote.issue-quote { border-left-color: var(--danger); background: rgba(229,57,53,0.07); }
+.msg-bubble.ai blockquote.good-quote { border-left-color: var(--success); background: rgba(67,160,71,0.08); }
+.msg-bubble.ai hr { border: none; border-top: 1px solid var(--card-border); margin: 8px 0; }
+/* AI 回复等待时的打字动画（三个跳动圆点） */
+.typing-dots { display: inline-flex; gap: 3px; align-items: center; padding: 2px 1px; }
+.typing-dots span {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--text-dim);
+    animation: typingBounce 1.2s infinite ease-in-out;
+}
+.typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typingBounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+    30% { transform: translateY(-3px); opacity: 1; }
+}
 .chat-input-area { display: flex; gap: 8px; }
 .chat-input-area input {
     flex: 1; padding: 10px 14px; border-radius: var(--radius-sm);
@@ -361,15 +399,17 @@ li { padding: 6px 0; font-size: 14px; }
     50% { opacity: 1; }
 }
 .chat-panel-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 1050;
+    position: fixed; inset: 0; background: transparent; z-index: 1050;
     display: none; align-items: stretch; justify-content: flex-end;
+    pointer-events: none; /* 非模态：不拦截主页面点击，可一边开着侧栏一边选中报告文字 */
 }
 .chat-panel-overlay.active { display: flex; }
 .chat-panel {
     width: 440px; max-width: 92vw; height: 100%;
     background: var(--card-bg); display: flex; flex-direction: column;
-    box-shadow: -4px 0 24px rgba(0,0,0,0.1);
+    box-shadow: -4px 0 24px rgba(0,0,0,0.4);
     animation: slideInRight 0.25s ease;
+    pointer-events: auto; /* 面板自身保持可交互 */
 }
 @keyframes slideInRight {
     from { transform: translateX(100%); }
@@ -400,6 +440,33 @@ li { padding: 6px 0; font-size: 14px; }
     font-size: 14px; font-family: var(--font);
 }
 .chat-panel-input-area input:focus { outline: none; border-color: var(--primary-light); }
+/* 选中报告文字后的浮动提问按钮 */
+.quote-ask-btn {
+    position: fixed; z-index: 1200; padding: 8px 14px;
+    background: var(--primary); color: #fff; border: none; border-radius: 20px;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+}
+.quote-ask-btn:hover { background: var(--primary-dark); }
+/* AI 侧栏里的"引用报告"条 */
+.chat-ref-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 20px; border-bottom: 1px solid var(--card-border);
+    background: rgba(92,107,192,0.10); flex-shrink: 0;
+}
+.chat-ref-label {
+    font-size: 12px; font-weight: 700; color: var(--primary-dark);
+    white-space: nowrap; flex-shrink: 0;
+}
+.chat-ref-text {
+    flex: 1; font-size: 13px; color: var(--text); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.chat-ref-clear {
+    background: none; border: none; color: var(--text-dim); font-size: 14px;
+    cursor: pointer; padding: 2px 6px; border-radius: 4px; flex-shrink: 0;
+}
+.chat-ref-clear:hover { color: var(--text); background: var(--bg); }
 
 /* ── Text Selection "Ask AI" Popup ── */
 .ask-ai-popup {

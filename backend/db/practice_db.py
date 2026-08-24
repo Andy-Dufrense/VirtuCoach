@@ -3,13 +3,15 @@
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "practice_sessions.db"
+DB_PATH = Path(__file__).parent.parent / "data" / "practice_sessions.db"
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def get_db():
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     # 注意：不开 foreign_keys。practice_sessions.user_id 外键指向 users 表，
     # 但 users 在另一个数据库文件里，SQLite 不支持跨库外键——开启后所有
     # INSERT 都会报 "no such table: main.users"，导致练习记录无法保存。
