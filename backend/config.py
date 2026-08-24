@@ -44,9 +44,9 @@ MAX_TOTAL_KEYFRAMES = 250     # 绝对安全上限
 ERROR_FRAME_WINDOW = 0.5
 
 # ---- JWT ----
-# 固定默认密钥：若用随机密钥，每次重启后端所有已登录用户的 token 都会失效
-# （表现为"分析完成了但没保存练习记录"）。生产环境请用 JWT_SECRET_KEY 环境变量覆盖。
-JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "virtucoach-graduate-stable-secret-2026")
+# 真实密钥放 .env（gitignored，不会进仓库）。这里只留开发用回退值：
+# 必须是固定值（随机密钥会导致每次重启 token 全失效），但不能把生产密钥写进代码库。
+JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "virtucoach-graduate-dev-fallback-2026")
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "24"))
 

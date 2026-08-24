@@ -256,14 +256,14 @@ def serve_register():
 
 
 def _verify_admin(token: str):
-    if token != ADMIN_PASSWORD:
+    # fail-closed：未配置管理密码（空）或 token 为空一律拒绝
+    if not ADMIN_PASSWORD or not token or token != ADMIN_PASSWORD:
         raise HTTPException(status_code=403, detail="Invalid admin token")
 
 
 @app.get("/api/verify-admin")
 async def verify_admin(token: str = Query(...)):
-    if token != ADMIN_PASSWORD:
-        raise HTTPException(status_code=403, detail="Invalid token")
+    _verify_admin(token)
     return {"ok": True}
 
 
@@ -379,7 +379,8 @@ def list_feedbacks(
 
 
 @app.get("/api/feedbacks/{feedback_id}")
-def get_feedback(feedback_id: int):
+def get_feedback(feedback_id: int, admin_token: str = Query(...)):
+    _verify_admin(admin_token)
     conn = get_feedback_db()
     row = conn.execute("SELECT * FROM feedbacks WHERE id = ?", [feedback_id]).fetchone()
     conn.close()
@@ -437,7 +438,8 @@ def get_feedback_screenshot(filename: str):
 
 
 @app.get("/api/feedback-stats")
-def get_feedback_stats():
+def get_feedback_stats(admin_token: str = Query(...)):
+    _verify_admin(admin_token)
     conn = get_feedback_db()
     total = conn.execute("SELECT COUNT(*) FROM feedbacks").fetchone()[0]
     pending = conn.execute("SELECT COUNT(*) FROM feedbacks WHERE status='pending'").fetchone()[0]
@@ -460,8 +462,9 @@ def get_feedback_stats():
 
 
 @app.get("/api/admin/overview")
-def get_admin_overview():
+def get_admin_overview(admin_token: str = Query(...)):
     """Data overview for admin dashboard."""
+    _verify_admin(admin_token)
     user_conn = get_user_db()
     practice_conn = get_practice_db()
     fb_conn = get_feedback_db()
@@ -490,8 +493,9 @@ def get_admin_overview():
 
 
 @app.get("/api/admin/users")
-def get_admin_users():
-    """List all users with their practice statistics."""
+def get_admin_users(admin_token: str = Query(...)):
+    """List all users with their practice statistics. Admin token required."""
+    _verify_admin(admin_token)
     user_conn = get_user_db()
     practice_conn = get_practice_db()
 

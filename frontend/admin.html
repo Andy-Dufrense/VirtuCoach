@@ -92,6 +92,9 @@
     text-transform: uppercase; letter-spacing: 0.3px; font-weight: 600;
 }
 .user-table tbody tr:hover { background: var(--card-hover); }
+.user-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.user-table th.sortable:hover { color: var(--text); }
+.user-table .sort-ind { display: inline-block; width: 1em; color: var(--primary, #5c6bc0); }
 .user-table .pwd-cell { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .user-table .pwd-mask { letter-spacing: 2px; color: var(--text-dim); }
 .btn-reset-pwd { padding: 3px 8px; font-size: 0.72rem; border-radius: 4px; border: 1px solid var(--card-border); background: transparent; color: var(--primary-dark); cursor: pointer; }
@@ -186,18 +189,30 @@
 
         <!-- Tab 3: User Management -->
         <div id="section-users" class="admin-section">
+            <div style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:var(--radius);padding:16px;margin-bottom:12px;">
+                <div class="filter-bar">
+                    <input type="search" id="userSearch" placeholder="搜索用户名/邮箱..." oninput="applyUserFilters()" style="min-width:220px;">
+                    <select id="userOnline" onchange="applyUserFilters()">
+                        <option value="">全部状态</option>
+                        <option value="online">在线</option>
+                        <option value="offline">离线</option>
+                    </select>
+                    <span id="userCount" style="align-self:center;color:var(--text-dim);font-size:13px;white-space:nowrap;"></span>
+                    <button class="btn btn-outline btn-sm" onclick="loadUsers()">刷新</button>
+                </div>
+            </div>
             <div class="user-table-wrap">
                 <table class="user-table">
                     <thead>
                         <tr>
-                            <th>用户名</th>
+                            <th class="sortable" onclick="sortUsers('username')">用户名 <span class="sort-ind" id="si-username"></span></th>
                             <th>邮箱</th>
                             <th>密码</th>
-                            <th>注册时间</th>
-                            <th>上次登录</th>
-                            <th>在线时长</th>
-                            <th>练习次数</th>
-                            <th>最近练习</th>
+                            <th class="sortable" onclick="sortUsers('created_at')">注册时间 <span class="sort-ind" id="si-created_at"></span></th>
+                            <th class="sortable" onclick="sortUsers('last_login')">上次登录 <span class="sort-ind" id="si-last_login"></span></th>
+                            <th class="sortable" onclick="sortUsers('active_seconds')">在线时长 <span class="sort-ind" id="si-active_seconds"></span></th>
+                            <th class="sortable" onclick="sortUsers('practice_count')">练习次数 <span class="sort-ind" id="si-practice_count"></span></th>
+                            <th class="sortable" onclick="sortUsers('last_practice')">最近练习 <span class="sort-ind" id="si-last_practice"></span></th>
                         </tr>
                     </thead>
                     <tbody id="userTableBody">
@@ -389,7 +404,7 @@ function switchTab(tab) {
 // ═══════════════ Data Overview ═══════════════
 async function loadOverview() {
     try {
-        const res = await fetch(API + '/admin/overview');
+        const res = await fetch(API + '/admin/overview?admin_token=' + encodeURIComponent(getToken()));
         const d = await res.json();
         const cards = [
             { icon: '👥', label: '用户总数', value: d.total_users, color: '#5c6bc0' },
@@ -448,33 +463,72 @@ async function loadOverview() {
 }
 
 // ═══════════════ User Management ═══════════════
+let allUsers = [];
+let userSort = { key: null, dir: -1 };
+
 async function loadUsers() {
     try {
-        const res = await fetch(API + '/admin/users');
+        const res = await fetch(API + '/admin/users?admin_token=' + encodeURIComponent(getToken()));
         const data = await res.json();
-        const tbody = document.getElementById('userTableBody');
-        if (!data.users.length) {
-            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--text-dim);">暂无用户</td></tr>';
-            return;
-        }
-        tbody.innerHTML = data.users.map(u => {
-            const online = isOnline(u.last_activity);
-            return `
-                <tr>
-                    <td><strong>${esc(u.username)}</strong></td>
-                    <td>${esc(u.email)}</td>
-                    <td><div class="pwd-cell"><span class="pwd-mask">••••••</span><button class="btn-reset-pwd" onclick="resetPassword(${u.id}, '${esc(u.username)}')">重置</button></div></td>
-                    <td>${formatDate(u.created_at)}</td>
-                    <td>${u.last_login ? formatDateTime(u.last_login) : '<span style="color:var(--text-dim)">-</span>'}</td>
-                    <td><span class="online-dot ${online ? 'on' : 'off'}"></span>${formatDuration(u.active_seconds)}</td>
-                    <td>${u.practice_count}</td>
-                    <td>${u.last_practice ? formatDate(u.last_practice) : '<span style="color:var(--text-dim)">-</span>'}</td>
-                </tr>
-            `;
-        }).join('');
+        allUsers = data.users || [];
+        applyUserFilters();
     } catch (err) {
         document.getElementById('userTableBody').innerHTML = '<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--danger);">加载失败</td></tr>';
     }
+}
+
+function applyUserFilters() {
+    const q = (document.getElementById('userSearch').value || '').trim().toLowerCase();
+    const onlineSel = document.getElementById('userOnline').value;
+    let list = allUsers.filter(u => {
+        if (q && !(String(u.username).toLowerCase().includes(q) || String(u.email || '').toLowerCase().includes(q))) return false;
+        if (onlineSel && (isOnline(u.last_activity) ? 'online' : 'offline') !== onlineSel) return false;
+        return true;
+    });
+    if (userSort.key) {
+        const k = userSort.key, d = userSort.dir;
+        const num = k === 'active_seconds' || k === 'practice_count';
+        list = list.slice().sort((a, b) => {
+            let va = a[k], vb = b[k];
+            if (num) { va = va == null ? -Infinity : +va; vb = vb == null ? -Infinity : +vb; }
+            else { va = va || ''; vb = vb || ''; }
+            return d * (va > vb ? 1 : va < vb ? -1 : 0);
+        });
+    }
+    document.getElementById('userCount').textContent = allUsers.length ? `${list.length} / ${allUsers.length} 位用户` : '';
+    renderUsers(list);
+}
+
+function sortUsers(key) {
+    if (userSort.key === key) userSort.dir *= -1;
+    else userSort = { key: key, dir: -1 };
+    document.querySelectorAll('.user-table .sort-ind').forEach(el => el.textContent = '');
+    const ind = document.getElementById('si-' + key);
+    if (ind) ind.textContent = userSort.dir === -1 ? '↓' : '↑';
+    applyUserFilters();
+}
+
+function renderUsers(list) {
+    const tbody = document.getElementById('userTableBody');
+    if (!list.length) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--text-dim);">${allUsers.length ? '没有匹配的用户' : '暂无用户'}</td></tr>`;
+        return;
+    }
+    tbody.innerHTML = list.map(u => {
+        const online = isOnline(u.last_activity);
+        return `
+            <tr>
+                <td><strong>${esc(u.username)}</strong></td>
+                <td>${esc(u.email)}</td>
+                <td><div class="pwd-cell"><span class="pwd-mask">••••••</span><button class="btn-reset-pwd" onclick="resetPassword(${u.id}, '${esc(u.username)}')">重置</button></div></td>
+                <td>${formatDate(u.created_at)}</td>
+                <td>${u.last_login ? formatDateTime(u.last_login) : '<span style="color:var(--text-dim)">-</span>'}</td>
+                <td><span class="online-dot ${online ? 'on' : 'off'}"></span>${formatDuration(u.active_seconds)}</td>
+                <td>${u.practice_count}</td>
+                <td>${u.last_practice ? formatDate(u.last_practice) : '<span style="color:var(--text-dim)">-</span>'}</td>
+            </tr>
+        `;
+    }).join('');
 }
 
 async function resetPassword(id, username) {
@@ -527,7 +581,7 @@ function formatDateTime(ts) {
 // ═══════════════ Feedback Management ═══════════════
 async function loadFeedbackStats() {
     try {
-        const res = await fetch(API + '/feedback-stats');
+        const res = await fetch(API + '/feedback-stats?admin_token=' + encodeURIComponent(getToken()));
         const s = await res.json();
         document.getElementById('statsGrid').innerHTML = `
             <div class="stat-card"><div class="num">${s.pending}</div><div class="label">待处理</div></div>
@@ -545,7 +599,7 @@ async function loadFeedbacks(page) {
     const status = document.getElementById('filterStatus').value;
     const search = document.getElementById('filterSearch').value;
 
-    const params = new URLSearchParams({ page: currentPage, sort: 'newest' });
+    const params = new URLSearchParams({ page: currentPage, sort: 'newest', admin_token: getToken() });
     if (category) params.set('category', category);
     if (status) params.set('status', status);
     if (search) params.set('search', search);
