@@ -1059,6 +1059,7 @@ class DeepSeekAgent:
                 hand_analysis['analysis_source'] = 'MediaPipe (规则引擎)'
 
             dismissal_note = self._build_dismissal_note(ai_dismissed)
+            chord_transition_note = self._build_chord_transition_note(video_data)
             user_prompt = f'''## 曲目: {title}
 乐器: {instrument}
 水平: {level}
