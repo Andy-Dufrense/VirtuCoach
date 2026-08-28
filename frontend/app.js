@@ -426,7 +426,7 @@ function showResult(data) {
     document.getElementById("audioErrorList").innerHTML = "";
     document.getElementById("handIssueList").innerHTML = "";
     document.getElementById("reportContent").innerHTML = "";
-    document.getElementById("summaryCard").innerHTML = "";
+    document.getElementById("summaryText").innerHTML = "";
 
     progressSection.style.display = "none";
     resultSection.style.display = "block";
@@ -490,7 +490,7 @@ function showResult(data) {
     var audioErrCount = (result.audio_errors || []).length;
     var handIssCount = realIssues ? realIssues.length : 0;
     var summaryText = result.summary || "分析完成，请查看下方详细报告。";
-    document.getElementById("summaryCard").innerHTML = summaryText;
+    document.getElementById("summaryText").innerHTML = escapeHtml(summaryText);
 
     // ===== 检测详情 =====
     var severityMap = {

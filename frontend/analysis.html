@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VirtuCoach - 练习分析</title>
-    <link rel="stylesheet" href="style.css?v=19">
+    <link rel="stylesheet" href="style.css?v=20">
 </head>
 <body>
     <div class="app">
@@ -281,7 +281,11 @@
                 </div>
 
                 <!-- 摘要 -->
-                <div class="summary-card" id="summaryCard"></div>
+                <!-- 一眼结论 -->
+                <div class="summary-card" id="summaryCard">
+                    <div class="summary-title">📌 一眼结论</div>
+                    <div class="summary-text" id="summaryText"></div>
+                </div>
 
                 <!-- 原视频回放（音频错误时间点可点击跳转） -->
                 <div class="report-card" id="videoReplayCard" style="display:none;">
@@ -469,7 +473,7 @@
 
     <script src="js/auth.js"></script>
     <script src="js/hand-check.js?v=16"></script>
-    <script src="app.js?v=17"></script>
+    <script src="app.js?v=18"></script>
     <script>
     (function () {
       if (VirtuCoach.isLoggedIn()) {
@@ -487,5 +491,3 @@
     </script>
 </body>
 </html>
-
-

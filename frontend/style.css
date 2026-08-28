@@ -496,6 +496,16 @@ p { color: var(--text-dim); }
 .snapshot-inline h4 svg { width: 18px; height: 18px; color: var(--primary-light); }
 
 .summary-card { font-size: 15px; line-height: 1.8; color: var(--text); }
+.summary-card .summary-title {
+    font-size: 16px; font-weight: 700;
+    color: var(--success);
+    margin-bottom: 6px;
+    letter-spacing: 0.5px;
+}
+.summary-card .summary-text {
+    font-size: 15px; line-height: 1.8;
+    color: var(--text);
+}
 
 /* ── 评分卡片 ── */
 .score-card {
