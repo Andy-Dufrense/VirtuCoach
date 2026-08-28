@@ -265,6 +265,20 @@ p { color: var(--text-dim); }
 .hero-ctas { animation-delay: 0.4s; }
 .hero-note { animation-delay: 0.5s; }
 
+/* 全局页面入场：所有功能页统一从屏幕下方滑入（与首页 hero 一致）。
+   用 backwards 填充：动画结束后不留 transform，避免影响 fixed 元素定位。 */
+.page-enter { animation: slideUp 0.7s cubic-bezier(0.22, 1, 0.36, 1) backwards; }
+
+/* 尊重系统“减少动态效果”设置（无障碍 / 企业级细节） */
+@media (prefers-reduced-motion: reduce) {
+    .page-enter, .hero-badge, .hero-title, .hero-sub, .hero-ctas, .hero-note,
+    .page-hero .eyebrow, .page-hero h1, .page-hero .lead,
+    .reveal, .result-section, .upload-mode-panel, .tab-content {
+        animation: none !important;
+        transition: none !important;
+    }
+}
+
 /* 通用 section */
 .section { max-width: 1120px; margin: 0 auto; padding: 64px 24px; }
 .section.tight { padding: 40px 24px; }
