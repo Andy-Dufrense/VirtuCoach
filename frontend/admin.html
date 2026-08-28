@@ -1,10 +1,10 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>管理面板 - VirtuCoach</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=18">
 <style>
 .admin-container { max-width: 1100px; margin: 0 auto; padding: 20px; }
 
@@ -36,9 +36,9 @@
     border-radius: var(--radius); padding: 20px; text-align: center;
     transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
-.overview-stat-card:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0,0,0,0.08); }
+.overview-stat-card:hover { transform: translateY(-2px); box-shadow: 0 8px 22px rgba(0,0,0,0.35); border-color: rgba(245, 166, 35, 0.35); }
 .overview-stat-card .icon { font-size: 24px; line-height: 1; margin-bottom: 8px; }
-.overview-stat-card .num { font-size: 32px; font-weight: 700; color: var(--primary-dark); }
+.overview-stat-card .num { font-size: 32px; font-weight: 700; color: var(--primary-light); }
 .overview-stat-card .label { font-size: 0.82rem; color: var(--text-dim); margin-top: 4px; }
 
 /* ── Feedback Section ── */
@@ -131,14 +131,22 @@
     </header>
 
     <!-- Password gate -->
-    <div id="passwordGate" class="gate">
-        <div style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:var(--radius);padding:28px;width:100%;max-width:400px;">
-            <h2 style="margin-bottom:20px;">管理员验证</h2>
-            <div style="margin-bottom:14px;">
-                <input type="password" id="adminPassword" placeholder="请输入管理密码" autofocus style="width:100%;padding:9px 12px;border:1px solid var(--card-border);border-radius:6px;background:var(--bg);color:var(--text);font-size:0.9rem;">
+    <div id="passwordGate" class="admin-gate">
+        <div class="admin-login-card">
+            <div class="admin-login-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
             </div>
-            <button class="btn btn-primary" onclick="login()" style="width:100%">进入</button>
-            <p id="loginError" style="color:var(--danger);margin-top:8px;font-size:.875rem;display:none;">密码错误</p>
+            <h1>管理员验证</h1>
+            <p class="sub">请输入管理密码以继续</p>
+            <label for="adminPassword">管理密码</label>
+            <div class="pw-wrap">
+                <input type="password" id="adminPassword" placeholder="请输入管理密码" autofocus>
+                <button type="button" class="pw-toggle" id="adminPwToggle" aria-label="显示或隐藏密码">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
+            </div>
+            <button class="btn btn-primary" onclick="login()" style="width:100%;margin-top:16px;">进入</button>
+            <p id="loginError" class="admin-login-error">密码错误</p>
         </div>
     </div>
 
@@ -147,11 +155,11 @@
 
         <!-- Tab Navigation -->
         <div class="admin-tabs">
-            <button class="admin-tab active" onclick="switchTab('overview')">📊 数据概览</button>
-            <button class="admin-tab" onclick="switchTab('feedbacks')">📝 意见收集</button>
-            <button class="admin-tab" onclick="switchTab('users')">👥 用户管理</button>
-            <button class="admin-tab" onclick="switchTab('refs')">📚 参考图管理</button>
-            <button class="admin-tab" onclick="switchTab('analytics')">📈 数据分析</button>
+            <button class="admin-tab active" onclick="switchTab('overview')">数据概览</button>
+            <button class="admin-tab" onclick="switchTab('feedbacks')">意见收集</button>
+            <button class="admin-tab" onclick="switchTab('users')">用户管理</button>
+            <button class="admin-tab" onclick="switchTab('refs')">参考图管理</button>
+            <button class="admin-tab" onclick="switchTab('analytics')">数据分析</button>
         </div>
 
         <!-- Tab 1: Data Overview -->
@@ -226,7 +234,7 @@
         <div id="section-refs" class="admin-section">
             <section class="ref-manager-section" id="refManagerSection" style="display:block;">
                 <div class="ref-manager-header">
-                    <h2>📚 正确手型参考图管理</h2>
+                    <h2>正确手型参考图管理</h2>
                 </div>
 
                 <!-- Upload form -->
@@ -235,12 +243,12 @@
                     <div class="ref-upload-row">
                         <div class="ref-upload-preview">
                             <div class="ref-preview-box" id="refPreviewBox">
-                                <span>🖼️</span>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:28px;height:28px;margin-bottom:8px;color:var(--text-dim);"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
                                 <p>选择图片</p>
                             </div>
                             <input type="file" id="refImageInput" accept="image/*" style="display:none;">
                             <button class="btn btn-secondary" id="refSelectBtn">选择图片</button>
-                            <button class="btn btn-primary" id="refAnalyzeBtn" disabled>🤖 AI 分析</button>
+                            <button class="btn btn-primary" id="refAnalyzeBtn" disabled>AI 分析</button>
                         </div>
                         <div class="ref-upload-form" id="refFormFields">
                             <div class="form-row">
@@ -289,7 +297,7 @@
                                 <input type="text" id="refTags" placeholder="如: 按弦,手指立起,指尖">
                             </div>
                             <div style="grid-column:1/-1;text-align:right;">
-                                <button class="btn btn-primary" id="refSaveBtn" disabled>💾 保存参考图</button>
+                                <button class="btn btn-primary" id="refSaveBtn" disabled>保存参考图</button>
                             </div>
                         </div>
                     </div>
@@ -307,11 +315,11 @@
         <div id="section-analytics" class="admin-section">
             <div class="analytics-toolbar">
                 <div class="analytics-btns">
-                    <button class="btn btn-outline btn-sm analytics-type-btn active" data-type="online" onclick="switchAnalytics('online')">👥 在线统计</button>
-                    <button class="btn btn-outline btn-sm analytics-type-btn" data-type="logins" onclick="switchAnalytics('logins')">🔑 登录频率</button>
-                    <button class="btn btn-outline btn-sm analytics-type-btn" data-type="practice" onclick="switchAnalytics('practice')">🎸 练习分析</button>
-                    <button class="btn btn-outline btn-sm analytics-type-btn" data-type="growth" onclick="switchAnalytics('growth')">📈 用户增长</button>
-                    <button class="btn btn-outline btn-sm analytics-type-btn" data-type="willingness" onclick="switchAnalytics('willingness')">💗 使用意愿</button>
+                    <button class="btn btn-outline btn-sm analytics-type-btn active" data-type="online" onclick="switchAnalytics('online')">在线统计</button>
+                    <button class="btn btn-outline btn-sm analytics-type-btn" data-type="logins" onclick="switchAnalytics('logins')">登录频率</button>
+                    <button class="btn btn-outline btn-sm analytics-type-btn" data-type="practice" onclick="switchAnalytics('practice')">练习分析</button>
+                    <button class="btn btn-outline btn-sm analytics-type-btn" data-type="growth" onclick="switchAnalytics('growth')">用户增长</button>
+                    <button class="btn btn-outline btn-sm analytics-type-btn" data-type="willingness" onclick="switchAnalytics('willingness')">使用意愿</button>
                 </div>
                 <div style="display:flex;gap:8px;align-items:center;">
                     <select id="analyticsDays" onchange="loadAnalytics()" style="padding:6px 10px;border:1px solid var(--card-border);border-radius:6px;background:var(--bg);color:var(--text);font-size:0.8rem;">
@@ -319,7 +327,7 @@
                         <option value="30" selected>近30天</option>
                         <option value="90">近90天</option>
                     </select>
-                    <button id="analyticsExportBtn" class="btn btn-outline btn-sm">⬇ 导出CSV</button>
+                    <button id="analyticsExportBtn" class="btn btn-outline btn-sm">导出CSV</button>
                 </div>
             </div>
             <div id="analyticsContent"><div class="empty">点击上方按钮查看分析结果</div></div>
@@ -358,6 +366,11 @@ document.addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && document.getElementById('passwordGate')?.style.display !== 'none') {
         login();
     }
+});
+
+document.getElementById('adminPwToggle').addEventListener('click', function() {
+    const input = document.getElementById('adminPassword');
+    input.type = input.type === 'password' ? 'text' : 'password';
 });
 
 function initAdminPage() {
@@ -407,11 +420,11 @@ async function loadOverview() {
         const res = await fetch(API + '/admin/overview?admin_token=' + encodeURIComponent(getToken()));
         const d = await res.json();
         const cards = [
-            { icon: '👥', label: '用户总数', value: d.total_users, color: '#5c6bc0' },
-            { icon: '✨', label: '今日新增用户', value: d.today_users, color: '#43a047' },
-            { icon: '🎸', label: '练习总次数', value: d.total_sessions, color: '#f59e0b' },
-            { icon: '🔥', label: '今日练习次数', value: d.today_sessions, color: '#8e24aa' },
-            { icon: '💬', label: '反馈总数', value: d.total_feedbacks, color: '#e53935' },
+            { icon: '', label: '用户总数', value: d.total_users, color: '#5c6bc0' },
+            { icon: '', label: '今日新增用户', value: d.today_users, color: '#43a047' },
+            { icon: '', label: '练习总次数', value: d.total_sessions, color: '#f59e0b' },
+            { icon: '', label: '今日练习次数', value: d.today_sessions, color: '#8e24aa' },
+            { icon: '', label: '反馈总数', value: d.total_feedbacks, color: '#e53935' },
         ];
         document.getElementById('overviewStats').innerHTML = cards.map(c => `
             <div class="overview-stat-card">
@@ -434,11 +447,11 @@ async function loadOverview() {
         chartsWrap.innerHTML = `
             <div class="analytics-grid-2">
                 <div class="analytics-card">
-                    <h3>📈 近14天登录趋势</h3>
+                    <h3>近14天登录趋势</h3>
                     <div class="analytics-chart-wrap" style="height:260px;"><canvas id="ovChartLogins"></canvas></div>
                 </div>
                 <div class="analytics-card">
-                    <h3>🎸 近14天练习趋势</h3>
+                    <h3>近14天练习趋势</h3>
                     <div class="analytics-chart-wrap" style="height:260px;"><canvas id="ovChartPractice"></canvas></div>
                 </div>
             </div>
@@ -879,7 +892,7 @@ function destroyOverviewCharts() {
 }
 
 function chartFallbackNote() {
-    return '<div class="empty">⚠️ 图表库（Chart.js）加载失败，已降级为纯表格展示。联网后刷新页面即可看到图表。</div>';
+    return '<div class="empty">图表库（Chart.js）加载失败，已降级为纯表格展示。联网后刷新页面即可看到图表。</div>';
 }
 
 function baseChartOptions(yTitle) {
@@ -961,7 +974,7 @@ function renderOnline(d) {
             <div class="overview-stat-card"><div class="num">${d.week_active}</div><div class="label">近7日活跃用户</div></div>
         </div>
         <div class="analytics-card">
-            <h3>🏆 活跃时长排行 Top ${d.top_active.length}</h3>
+            <h3>活跃时长排行 Top ${d.top_active.length}</h3>
             ${window.Chart ? '<div class="analytics-chart-wrap"><canvas id="chartOnline"></canvas></div>' : chartFallbackNote()}
             <table class="user-table" style="margin-top:14px;">
                 <thead><tr><th>用户名</th><th>累计在线时长</th><th>最近活跃</th></tr></thead>
@@ -1188,6 +1201,6 @@ initAdminPage();
 var API_BASE = window.location.origin;
 function showToast(message, type) { toast(message, type === 'error' ? 'error' : 'success'); }
 </script>
-<script src="js/reference-manager.js?v=14"></script>
+<script src="js/reference-manager.js?v=15"></script>
 </body>
 </html>

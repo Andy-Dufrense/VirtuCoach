@@ -76,6 +76,11 @@ def _midi_to_note_name(midi_pitch: int) -> str:
     return f"{names[midi_pitch % 12]}{octave}"
 
 
+# 滑音(slide)检测开关：误报严重（正常分解和弦/音阶被误判），临时屏蔽。
+# 待精准检测方案落地后改回 True 恢复。
+SLIDE_DETECTION_ENABLED = False
+
+
 class AudioAnalyzer:
     """音频分析器：从视频中提取音符并进行 DeepSeek 智能纠错"""
 
@@ -114,32 +119,64 @@ class AudioAnalyzer:
         """
         纯 Python 读取视频中的音频轨道
         策略：
-        1. 先尝试 librosa（支持通过 audioread 后端读视频）
-        2. 失败则尝试用 scipy 或 soundfile 等
+        1. 先用 PyAV（自带 FFmpeg 解码库，不依赖外部 ffmpeg 可执行文件）
+        2. 再尝试 librosa（支持通过 audioread 后端读视频）
+        3. 失败则尝试用系统 ffmpeg 命令
         """
+        # 1. PyAV 直读视频音轨（最可靠：mp4/mov 等容器和 AAC/HEVC 都能解）
         try:
-            import librosa
-            # librosa 可以用 audioread 后端读部分视频格式
-            y, sr = librosa.load(video_path, sr=16000, mono=True, duration=None)
-            if len(y) > 0:
-                return y
-        except Exception as e1:
-            pass
+            import av
+            with av.open(video_path) as _container:
+                _astream = next((s for s in _container.streams if s.type == "audio"), None)
+                if _astream is None:
+                    return None
+                _resampler = av.AudioResampler(format="fltp", layout="mono", rate=16000)
+                _chunks = []
+                for _frame in _container.decode(audio=0):
+                    for _rf in _resampler.resample(_frame):
+                        _arr = _rf.to_ndarray()
+                        if isinstance(_arr, tuple):
+                            _arr = np.concatenate([np.asarray(a, dtype=np.float32) for a in _arr])
+                        _chunks.append(np.asarray(_arr, dtype=np.float32).ravel())
+                for _rf in _resampler.resample(None):
+                    _arr = _rf.to_ndarray()
+                    if isinstance(_arr, tuple):
+                        _arr = np.concatenate([np.asarray(a, dtype=np.float32) for a in _arr])
+                    _chunks.append(np.asarray(_arr, dtype=np.float32).ravel())
+                if _chunks:
+                    _y = np.concatenate(_chunks)
+                    if len(_y) > 0:
+                        return _y.astype(np.float32)
+        except Exception as _e:
+            logger.debug(f"PyAV 读音频失败，尝试其它方式: {_e}")
 
+        # 2. ffmpeg 转 WAV（带超时，最可靠；放在 librosa 前面，避免
+        #    librosa 在视频文件上因无解码后端而挂死，永远轮不到这里）
         try:
             import subprocess
-            # 尝试用系统已装的 ffmpeg（如果有的话）
+            from config import FFMPEG_PATH
             result = subprocess.run(
-                ["ffmpeg", "-i", video_path, "-f", "wav", "-acodec", "pcm_s16le",
+                [FFMPEG_PATH, "-i", video_path, "-f", "wav", "-acodec", "pcm_s16le",
                  "-ac", "1", "-ar", "16000", "-"],
-                capture_output=True, timeout=60
+                capture_output=True, timeout=90
             )
             if result.returncode == 0 and len(result.stdout) > 100:
                 import soundfile as sf
                 import io
                 y, sr = sf.read(io.BytesIO(result.stdout))
                 return y
-        except:
+        except Exception:
+            pass
+
+        # 3. librosa（只对纯音频文件尝试；视频文件 audioread 可能无后端并挂死）
+        try:
+            _ext = os.path.splitext(video_path)[1].lower()
+            if _ext in (".wav", ".mp3", ".flac", ".m4a", ".ogg", ".aac", ".wma", ".opus"):
+                import librosa
+                y, sr = librosa.load(video_path, sr=16000, mono=True, duration=None)
+                if len(y) > 0:
+                    return y
+        except Exception:
             pass
 
         return None
@@ -223,6 +260,12 @@ class AudioAnalyzer:
 
             # 2. basic-pitch 转录
             notes = self._transcribe_notes(audio, hand_zone_center, capo)
+            # 2.1 过滤演奏开始前的幻音（准备期噪声被 basic-pitch 误转录成音符）
+            if onset_time > 0:
+                n_before = len(notes)
+                notes = self._filter_pre_onset_notes(notes, onset_time)
+                if len(notes) < n_before:
+                    logger.info(f"过滤演奏开始前幻音: 移除 {n_before - len(notes)}/{n_before} 音符 (onset={onset_time:.2f}s)")
             result["stats"]["total_notes"] = len(notes)
             logger.info(f"转录音符数: {len(notes)}")
 
@@ -260,6 +303,10 @@ class AudioAnalyzer:
             detected_chords = self._refine_chords_with_notes(
                 detected_chords or [], notes, capo=best_capo)
             result["detected_chords"] = detected_chords
+            # 2.6.5 和弦主导性：单和弦视频（弹得差的单和弦可能被误报为多个标签）豁免换和弦判断
+            result["chord_dominance"] = self._compute_chord_dominance(
+                detected_chords,
+                audio_duration=len(audio) / 16000 if audio is not None else None)
 
             # 2.7 和弦驱动音符过滤（用和弦结论过滤幻音，必须在使用 notes 之前）
             phantom_notes = []
@@ -279,13 +326,14 @@ class AudioAnalyzer:
             result["note_text"] = note_text
 
             # 4.5 乐句间隔检测（使用过滤后音符，避免幻音产生假间隔）
-            gap_analysis = self._detect_phrase_gaps(filtered_notes)
+            gap_analysis = self._detect_phrase_gaps(filtered_notes, audio=audio, sr=16000)
             result["gap_analysis"] = gap_analysis
 
             # 5. DeepSeek 智能解读（使用过滤后音符）
             if self.ds_available:
                 ds_errors, ds_stats = self._deepseek_analyze_errors(
-                    note_text, filtered_notes, instrument, audio_features, gap_analysis
+                    note_text, filtered_notes, instrument, audio_features, gap_analysis,
+                    is_single=result.get("chord_dominance", {}).get("is_single", False),
                 )
                 ds_pitch = ds_stats.get("pitch_accuracy", 0)
                 ds_rhythm = ds_stats.get("rhythm_accuracy", 0)
@@ -305,7 +353,7 @@ class AudioAnalyzer:
                     ioi_cv_core = getattr(audio_features, 'ioi_cv_core', 0) if audio_features else 0
                     ds_rhythm = stats.get("rhythm_accuracy", 80)
                     if ioi_cv_core > 0:
-                        if ioi_cv_core < 0.45:
+                        if ioi_cv_core < 0.60:
                             if ds_rhythm < 82:
                                 stats["rhythm_accuracy"] = 82
                                 stats["overall_score"] = max(stats.get("overall_score", 82), 82)
@@ -326,7 +374,8 @@ class AudioAnalyzer:
                     "overall_score": self._calc_overall_score(errors, len(filtered_notes)),
                 }
 
-            # 4.5 闷音/哑音检测（使用过滤后音符）
+            # 4.5 闷音/哑音检测：velocity 低力度聚类。
+            # flatness 方案已移到 5.6.6（扫弦检测之后），因为要先知道扫弦段/开头/结尾才能决定哪里不检测。
             dead_errors = self._detect_dead_notes(filtered_notes, audio_features)
             if dead_errors:
                 existing_dead_times = {e.get("time", 0) for e in errors if e.get("type") == "dead_note"}
@@ -334,10 +383,25 @@ class AudioAnalyzer:
                     t = de.get("time", 0)
                     if not any(abs(t - edt) < 1.5 for edt in existing_dead_times):
                         errors.append(de)
+                        existing_dead_times.add(t)
                 logger.info(f"闷音检测合并: 新增 {len([de for de in dead_errors if not any(abs(de.get('time',0)-edt)<1.5 for edt in existing_dead_times)])} 个闷音区域")
 
+            # 4.55 停顿误报抑制：确定性 IOI 检测（能区分延音/收尾动作 vs 真换和弦停顿）判定
+            # 无显著间隔时，剔除 LLM/规则引擎幻觉出的 transition_gap。
+            # DeepSeek 常把延音、乐句呼吸、结尾收尾动作误报成「换和弦停顿」（如 22s 压根没停、
+            # 结尾延音当 2.6s 停顿）。确定性检测在真停顿视频上能命中（has_large_gaps=True），
+            # 因此这里只在其「未发现显著间隔」时压制，不影响真停顿。
+            if gap_analysis and not gap_analysis.get("has_large_gaps"):
+                _before = len(errors)
+                errors = [e for e in errors if e.get("type") != "transition_gap"]
+                _dropped = _before - len(errors)
+                if _dropped:
+                    logger.info(f"停顿误报抑制: 确定性无显著间隔, 剔除 {_dropped} 条 LLM/规则 transition_gap")
+
             # 4.6 乐句间隔→transition_gap 转换（确定性检测，绕过 LLM 避免漏报）
-            gap_errors = self._gaps_to_errors(gap_analysis)
+            # 单和弦视频不报「换和弦停顿」——停顿只是乐句/弹奏节奏，不是换和弦不流畅
+            gap_errors = self._gaps_to_errors(
+                gap_analysis, single_chord=result.get("chord_dominance", {}).get("is_single", False))
             if gap_errors:
                 existing_gap_times = {e.get("time", 0) for e in errors if e.get("type") == "transition_gap"}
                 for ge in gap_errors:
@@ -348,6 +412,21 @@ class AudioAnalyzer:
 
             # 按时间排序所有错误
             errors.sort(key=lambda e: e.get("time", 0))
+
+            # 单和弦视频出口守卫：任何来源的 transition_gap（换和弦停顿）一律剔除。
+            # 单和弦视频弹得差可能被误报多个标签，停顿只是乐句/节奏表现，不是换和弦卡顿。
+            # DeepSeek 路径已在其内部先行剔除（保留错误名额），此处兜底规则备选等其它来源。
+            if result.get("chord_dominance", {}).get("is_single"):
+                errors = [e for e in errors if e.get("type") != "transition_gap"]
+                # AI 可能在其它错误（如 rhythm_fault）的 detail 里夹带「换和弦」措辞，
+                # 单和弦视频没有和弦切换，统一替换成中性的「弹奏」表述避免误导学员。
+                for _e in errors:
+                    if isinstance(_e.get("detail"), str):
+                        _e["detail"] = (
+                            _e["detail"].replace("换和弦", "弹奏")
+                            .replace("和弦切换", "弹奏")
+                            .replace("换把位", "移动")
+                        )
 
             result["errors"] = errors
             result["error_timestamps"] = [e["time"] for e in errors if "time" in e]
@@ -440,6 +519,49 @@ class AudioAnalyzer:
             except Exception as e:
                 logger.warning(f"扫弦质量评估失败: {e}")
                 result["strumming_quality"] = None
+
+            # 5.6.6 频谱平坦度闷音检测（flatness 方案）—— 移到扫弦检测之后：
+            # 只在「非扫弦」内容上跑：扫弦(六根弦齐响宽带谱)必然误报闷音。
+            # 判断扫弦用「高置信扫弦段」而非 has_strumming——低置信 strumming(0.25)
+            # 是分类器的默认底噪，纯分解和弦视频也会冒出来，用它会误伤真闷音。
+            has_strong_strumming = any(
+                c.get("type") == "strumming" and c.get("type_confidence", c.get("confidence", 0)) >= 0.5
+                for c in onset_clusters
+            )
+            if not has_strong_strumming:
+                dead_flat_errors = self._detect_dead_notes_flatness(audio, sr=16000)
+                if dead_flat_errors:
+                    onset_t = result.get("playing_onset", 0)
+                    last_note_end = max(
+                        (n.get("end_time", n.get("start_time", 0)) for n in filtered_notes),
+                        default=len(audio) / 16000,
+                    )
+                    kept = []
+                    for e in dead_flat_errors:
+                        t = e.get("time", 0)
+                        if onset_t > 0 and t < onset_t - 0.3:
+                            continue  # 还没开始弹
+                        if t > last_note_end + 0.3:
+                            continue  # 已经弹完
+                        kept.append(e)
+                    if kept:
+                        existing_dead_times = {e.get("time", 0) for e in errors if e.get("type") == "dead_note"}
+                        added = 0
+                        for de in kept:
+                            t = de.get("time", 0)
+                            if not any(abs(t - edt) < 1.5 for edt in existing_dead_times):
+                                errors.append(de)
+                                existing_dead_times.add(t)
+                                added += 1
+                        if added:
+                            errors.sort(key=lambda e: e.get("time", 0))
+                            result["errors"] = errors
+                            result["error_timestamps"] = [e["time"] for e in errors if "time" in e]
+                            logger.info(f"闷音检测(flatness): 报 {added} 个呲音（扫弦/开头/结尾已剔除）")
+            else:
+                logger.info(f"闷音检测(flatness): 高置信扫弦段存在，整体跳过（扫弦内容不检测呲音）")
+            for e in errors:
+                e.pop("_source", None)
 
             # 5.6b 扫弦段和弦校正 — 禁用
             # basic-pitch 音符转录在复音场景下不可靠，用它覆写 chroma 会引入错误
@@ -649,9 +771,11 @@ class AudioAnalyzer:
         if mean_ioi > 0.05:
             f.ioi_cv = round(std_ioi / mean_ioi, 4)
             f.tempo_bpm = round(60.0 / mean_ioi, 1)
-            # 核心 CV：仅用 P90 以内的 IOI，排除乐句呼吸等离群值对整体节奏评估的干扰
-            p90 = float(np.percentile(iois, 90))
-            core_iois = iois[iois <= p90]
+            # 核心 CV：用 P20-P80 中段 60% 的 IOI，同时排除扫弦簇(极短)和乐句呼吸(极长)，
+            # 降低吉他「扫弦+旋律」双峰分布导致的 CV 系统性虚高（2026-08-18 修复节奏误报）
+            p20 = float(np.percentile(iois, 20))
+            p80 = float(np.percentile(iois, 80))
+            core_iois = iois[(iois >= p20) & (iois <= p80)]
             if len(core_iois) >= 4:
                 core_mean = float(np.mean(core_iois))
                 core_std = float(np.std(core_iois))
@@ -795,14 +919,14 @@ class AudioAnalyzer:
             parts.append(f"速度: {f.tempo_bpm:.0f} BPM")
             # 吉他阈值：扫弦+旋律混合天然 CV 偏高，阈值比一般乐器宽松
             parts.append(f"节拍稳定性: CV(全局)={f.ioi_cv:.3f} " +
-                          ("(优秀)" if f.ioi_cv < 0.20 else
-                           "(良好)" if f.ioi_cv < 0.35 else
-                           "(一般)" if f.ioi_cv < 0.50 else "(不稳定)"))
+                          ("(优秀)" if f.ioi_cv < 0.25 else
+                           "(良好)" if f.ioi_cv < 0.40 else
+                           "(一般)" if f.ioi_cv < 0.60 else "(不稳定)"))
             if f.ioi_cv_core > 0:
                 parts.append(f"核心节奏稳定性: CV(核心)={f.ioi_cv_core:.3f} " +
                               ("(优秀, 排除离群后节奏均匀)" if f.ioi_cv_core < 0.25 else
-                               "(良好/正常, 扫弦+旋律的正常混合)" if f.ioi_cv_core < 0.45 else
-                               "(偏不稳)" if f.ioi_cv_core < 0.55 else "(不稳定)"))
+                               "(良好/正常, 扫弦+旋律的正常混合)" if f.ioi_cv_core < 0.40 else
+                               "(偏不稳)" if f.ioi_cv_core < 0.60 else "(不稳定)"))
         if f.local_rush_regions:
             parts.append(f"加速段落: {len(f.local_rush_regions)}处")
         if f.local_drag_regions:
@@ -1001,7 +1125,7 @@ class AudioAnalyzer:
                         "confidence": 0.70,
                     })
             # 滑音：间隔<150ms，音高差1-12半音
-            if 0 <= gap < 0.15 and 1 <= abs(pitch_diff) <= 12:
+            if SLIDE_DETECTION_ENABLED and 0 <= gap < 0.15 and 1 <= abs(pitch_diff) <= 12:
                 if same_string:
                     direction = "上滑" if curr["pitch"] > prev["pitch"] else "下滑"
                     segments.append({
@@ -1576,6 +1700,13 @@ class AudioAnalyzer:
 
         if is_high_energy:
             atk = fp.get("avg_attack_duration", 0.0)
+            # （2026-08-25 V4 复盘：曾加 note_spread<3 + atk>12 → block_chord 规则，
+            # 实测两个方向都误判——basic-pitch 把柱式多弦合并成 1 个音符
+            # （note_spread=0, avg_notes=1），扫弦的 atk 也能达 20ms+。
+            # 柱式/扫弦的可靠判据是视觉腕摆动幅度（data/ 基线：扫弦窗口 std
+            # 0.045-0.086 vs 柱式/指弹 0.002-0.027），由
+            # _refine_clusters_with_hand_motion 在音频层之后统一修正。
+            # 音频层保持原 atk 逻辑。）
             if atk >= 1.0:
                 if atk > 12:
                     scores["strumming"] += 0.35
@@ -1688,6 +1819,10 @@ class AudioAnalyzer:
             if note_spread < 20 and wide_ratio_ds < 0.30:
                 scores["double_stop"] += 0.25
                 scores["block_chord"] += 0.10
+
+        # ── 柱式硬否决已移除（2026-08-25 V4 复盘）──
+        # note_spread/atk 音频特征在柱式 vs 扫弦上不可靠（详见上方 atk 分支注释），
+        # 柱式否决由视觉腕摆动修正（_refine_clusters_with_hand_motion）负责。
 
         # ── Pick best ──
         best_type = max(scores, key=scores.get)
@@ -1934,14 +2069,6 @@ class AudioAnalyzer:
             if len(strokes) < 4:
                 return []
 
-            # 6. 方向交替逻辑校验：连续3个同向 → 中间那次可能是误判
-            for i in range(1, len(strokes) - 1):
-                if (strokes[i]["direction"] == strokes[i-1]["direction"] == strokes[i+1]["direction"]
-                        and strokes[i]["direction"] != "?"
-                        and strokes[i]["confidence"] < 0.65):
-                    strokes[i]["direction"] = "up" if strokes[i]["direction"] == "down" else "down"
-                    strokes[i]["confidence"] = 0.45
-
             # 4. 聚类（相邻 stroke 间隔 > 1.2s 断开）
             if not strokes:
                 return []
@@ -2029,13 +2156,19 @@ class AudioAnalyzer:
                             f"n={fp['n_strokes']} energy={fp.get('avg_energy',0):.4f} "
                             f"atk={fp.get('avg_attack_duration',0):.0f}ms "
                             f"spread={fp.get('avg_spectral_spread',0):.0f}Hz "
-                            f"peaks={fp.get('avg_peak_count',0):.1f} burst={fp.get('onset_burst_ratio',0):.0%}")
+                            f"peaks={fp.get('avg_peak_count',0):.1f} burst={fp.get('onset_burst_ratio',0):.0%} "
+                            f"note_spread={fp.get('avg_within_stroke_spread_ms',0):.1f}ms "
+                            f"avg_notes={fp.get('avg_notes_per_stroke',0):.1f}")
 
                 # 6d. 组装结果
                 directions = [s.get("direction", "?") for s in seg]
                 n_down = directions.count("down")
                 n_up = directions.count("up")
                 n_unknown = directions.count("?")
+                # 方向可靠性：FFT 低频/高频峰时序信号噪声大，非 '?' 比例过低时不可信
+                direction_reliable = (
+                    len(directions) > 0 and n_unknown / len(directions) <= 0.4
+                )
 
                 direction_str = " ".join("下" if d == "down" else ("上" if d == "up" else "?") for d in directions)
                 if len(direction_str) > 60:
@@ -2051,6 +2184,7 @@ class AudioAnalyzer:
                     "pattern_label": direction_str,
                     "pattern_summary": f"{n_down}下{n_up}上" + (f"({n_unknown}?)" if n_unknown else ""),
                     "confidence": cconf,
+                    "direction_reliable": direction_reliable,
                 }
                 if rhythm_pattern:
                     result["rhythm_pattern"] = rhythm_pattern
@@ -2399,33 +2533,37 @@ class AudioAnalyzer:
                 else:
                     dynamic_variation = 0.4  # 不稳定
 
-        # 3. 方向分析：使用改进后的方向检测结果
+        # 3. 方向分析：FFT 逐 stroke 方向信号噪声大，方向不可信时不给出方向性结论
         directions = [s.get("direction", "?") for s in all_strokes]
         direction_issues = []
         alt_breaks = 0
         unknown_count = directions.count("?")
-        # 只统计低置信度方向之间的交替断裂
-        for i in range(1, len(directions)):
-            di = directions[i]
-            di_prev = directions[i - 1]
-            if di != "?" and di_prev != "?" and di == di_prev:
-                # 检查是否可能是刻意同向（如连续下扫的重音练习）
-                conf_i = all_strokes[i].get("confidence", 0.5)
-                conf_p = all_strokes[i - 1].get("confidence", 0.5)
-                if conf_i < 0.55 or conf_p < 0.55:
-                    alt_breaks += 1  # 低置信度同向 = 可能是误判
-
         down_count = directions.count("down")
         up_count = directions.count("up")
-        # 有合理的上下比例才是好的扫弦
-        if up_count == 0 and down_count > 6:
-            direction_issues.append("全部识别为下扫，可能未做上扫或方向检测不准确")
-        elif up_count < down_count * 0.2 and down_count > 8:
-            direction_issues.append(f"上扫偏少（{up_count}上/{down_count}下），手腕可能不够灵活")
-        if alt_breaks > len(directions) * 0.15:
-            direction_issues.append(f"有{alt_breaks}处方向交替不自然")
-        if unknown_count > len(directions) * 0.3:
-            direction_issues.append(f"方向识别不清比例偏高({unknown_count}/{len(directions)})")
+        direction_reliable = (
+            len(directions) > 0 and unknown_count / len(directions) <= 0.4
+        )
+        if direction_reliable:
+            # 只统计低置信度方向之间的交替断裂
+            for i in range(1, len(directions)):
+                di = directions[i]
+                di_prev = directions[i - 1]
+                if di != "?" and di_prev != "?" and di == di_prev:
+                    # 检查是否可能是刻意同向（如连续下扫的重音练习）
+                    conf_i = all_strokes[i].get("confidence", 0.5)
+                    conf_p = all_strokes[i - 1].get("confidence", 0.5)
+                    if conf_i < 0.55 or conf_p < 0.55:
+                        alt_breaks += 1  # 低置信度同向 = 可能是误判
+
+            # 有合理的上下比例才是好的扫弦
+            if up_count == 0 and down_count > 6:
+                direction_issues.append("全部识别为下扫，可能未做上扫或方向检测不准确")
+            elif up_count < down_count * 0.2 and down_count > 8:
+                direction_issues.append(f"上扫偏少（{up_count}上/{down_count}下），手腕可能不够灵活")
+            if alt_breaks > len(directions) * 0.15:
+                direction_issues.append(f"有{alt_breaks}处方向交替不自然")
+        else:
+            direction_issues.append("方向识别精度有限（部分拨弦方向不确定），方向相关建议仅供参考")
 
         # 4. 速度漂移
         tempo_drift = 0.0
@@ -2444,11 +2582,14 @@ class AudioAnalyzer:
                     tempo_issue = f"略有{direction_word}（{abs(tempo_drift)*100:.0f}%）"
 
         # 5. 综合评分（pattern-aware 权重）
-        direction_score = max(0.2, 1.0 - alt_breaks * 0.15 - unknown_count * 0.05)
-        if up_count > 0 and down_count > 0:
-            up_ratio = min(up_count, down_count) / max(up_count, down_count) if max(up_count, down_count) > 0 else 0
-            direction_score += up_ratio * 0.2  # bonus for having both directions
-        direction_score = min(1.0, direction_score)
+        if direction_reliable:
+            direction_score = max(0.2, 1.0 - alt_breaks * 0.15 - unknown_count * 0.05)
+            if up_count > 0 and down_count > 0:
+                up_ratio = min(up_count, down_count) / max(up_count, down_count) if max(up_count, down_count) > 0 else 0
+                direction_score += up_ratio * 0.2  # bonus for having both directions
+            direction_score = min(1.0, direction_score)
+        else:
+            direction_score = 0.75  # 方向不可信时取中性分，不因 FFT 噪声惩罚
         drift_score = 1.0 - min(0.3, abs(tempo_drift) * 0.5)
 
         overall = timing_accuracy * 0.35 + dynamic_variation * 0.25 + direction_score * 0.25 + drift_score * 0.15
@@ -2460,9 +2601,9 @@ class AudioAnalyzer:
         # 节奏反馈
         if rhythm_details:
             feedback_parts.append(f"计时分析[{timing_label}]: {rhythm_details}")
-        elif rhythm_cv < 0.12:
+        elif rhythm_cv < 0.20:
             feedback_parts.append("节奏基本稳定，扫弦律动感好")
-        elif rhythm_cv < 0.22:
+        elif rhythm_cv < 0.35:
             feedback_parts.append("节奏有轻微不均匀，建议用节拍器练习")
         else:
             feedback_parts.append(f"节奏不稳定，建议用节拍器60-70BPM单独练节奏型")
@@ -2497,6 +2638,7 @@ class AudioAnalyzer:
             "dynamic_variation": round(dynamic_variation, 2),
             "dynamic_cv": round(dynamic_cv, 3),
             "direction_issues": direction_issues,
+            "direction_reliable": direction_reliable,
             "tempo_drift": round(tempo_drift, 3),
             "tempo_issue": tempo_issue,
             "alternation_breaks": alt_breaks,
@@ -2583,7 +2725,7 @@ class AudioAnalyzer:
                     })
 
             # 2. 滑音检测：相邻音符时间连续 + 音高连续变化
-            if interval < 0.15 and 1 <= abs(pitch_diff) <= 12:
+            if SLIDE_DETECTION_ENABLED and interval < 0.15 and 1 <= abs(pitch_diff) <= 12:
                 s_prev = prev.get("string", 0)
                 s_curr = curr.get("string", 0)
                 direction = "上滑" if pitch_diff > 0 else "下滑"
@@ -2698,6 +2840,39 @@ class AudioAnalyzer:
             else:
                 merged.append(seg.copy())
         return merged
+
+    @staticmethod
+    def _merge_tail_short_segment(detected: List[Dict], templates: Dict) -> List[Dict]:
+        """合并结尾的短低置信段（松手余响误判）。
+
+        用户反馈：只弹一个 C 和弦、中间断了一下，却报「C→Am 转换」。
+        根因：松手后余响段 chroma 特征不稳定，结尾 0.7s 被误判成 Am，
+        且作为最后一段绕过了过渡区合并(要求中间段)与最小时长过滤(0.7s>0.5s)。
+
+        规则：结尾段若「短(<1.0s)+低置信(<0.6)」且与前段共享≥2音高
+        （如 Am↔C 相对大小调共享 C、E），视为尾音余响，合并到前段。
+        真正快速换到不同和弦（共享<2）或完整按下的高置信段不受影响。
+        """
+        if len(detected) < 2:
+            return detected
+        last = detected[-1]
+        dur = last.get("end_time", 0) - last.get("time", 0)
+        conf = last.get("confidence", 0)
+        if dur >= 1.0 or conf >= 0.60:
+            return detected
+        prev = detected[-2]
+        prev_pc = templates.get(prev.get("chord_id", ""), {}).get("pcset", set())
+        last_pc = templates.get(last.get("chord_id", ""), {}).get("pcset", set())
+        shared = len(prev_pc & last_pc) if prev_pc and last_pc else 0
+        if shared < 2:
+            return detected
+        logger.info(f"Tail merge: {last.get('chord_name','?')}"
+                    f"[{last.get('time',0):.1f}s-{last.get('end_time',0):.1f}s] "
+                    f"→ {prev.get('chord_name','?')} (尾音短段, shared={shared})")
+        prev["end_time"] = last["end_time"]
+        prev["confidence"] = round(max(prev.get("confidence", 0), conf), 2)
+        detected.pop()
+        return detected
 
     # ==================== basic-pitch 转录 ====================
 
@@ -3224,6 +3399,7 @@ class AudioAnalyzer:
                     min_rms = overall_rms * 0.08
                     filtered = []
                     prev_sp = None
+                    prev_end = None
                     for d in detected:
                         t0 = d.get("time", 0)
                         t1 = d.get("end_time", t0 + 1)
@@ -3236,9 +3412,11 @@ class AudioAnalyzer:
                                             f"seg_rms={seg_rms:.4f} < {min_rms:.4f}")
                                 continue
                             # 残响检测：频谱高度相似+能量显著衰减→前和弦的残响
-                            # 只用极严阈值(rms衰减>30%, 质心差<150Hz)避免误杀
+                            # 只用极严阈值(rms衰减>30%, 质心差<150Hz)避免误杀。
+                            # 残响必然与前和弦在时间上连续(弦还在振动)；若中间有空档
+                            # (如 G→Am 间隔 0.8s)，说明是重新拨弦的新和弦，不能当残响丢弃。
                             dur = t1 - t0
-                            if prev_sp and dur < 2.0:
+                            if prev_sp and prev_end is not None and dur < 2.0 and (t0 - prev_end) < 0.3:
                                 sp = self._segment_spectral_features(audio[s0:s1], sr)
                                 if sp and prev_sp:
                                     c_sim = abs(sp["centroid_hz"] - prev_sp["centroid_hz"]) < 100
@@ -3252,6 +3430,7 @@ class AudioAnalyzer:
                                 sp = None
                             filtered.append(d)
                             prev_sp = self._segment_spectral_features(audio[s0:s1], sr) if sp is None else sp
+                            prev_end = t1
                         else:
                             filtered.append(d)
                     if len(filtered) < len(detected):
@@ -3348,6 +3527,9 @@ class AudioAnalyzer:
                     logger.info(f"Min-duration filter: {len(detected)}→{len(filtered)} segments")
                 detected = filtered
 
+            # 4.75 结尾短段合并：消除松手余响误判（如 C→Am 尾音）
+            detected = self._merge_tail_short_segment(detected, templates)
+
             # 4.8 maj7→triad 回退：5th的5次泛音物理上落在maj7位置，
             # 12-bin chroma无法区分真maj7和泛音污染 → 统一回退为三和弦
             _SEVENTH_TO_TRIAD = {
@@ -3369,7 +3551,11 @@ class AudioAnalyzer:
                     d["related_techniques"] = triad_info.get("related_techniques", [])
                     logger.info(f"maj7 downgrade: {cid}→{triad_cid} @t={d.get('time',0):.1f}s")
 
-            # 4.9 间隙填充：扫描 > 1.2s 空白，取段内最佳匹配模板补回遗漏和弦
+            # 4.9 间隙填充：扫描 1.2s~MAX_GAP_FILL_DUR 的空白，取段内最佳匹配模板补回遗漏和弦。
+            # 过长间隙（> MAX_GAP_FILL_DUR）几乎必然含多个和弦，用单和弦填充会把
+            # 整段多和弦误判成一个七和弦（如 B7 覆盖 G-Am-Em-F-C-Dm7），故跳过。
+            # 这些练习视频单和弦约 2-3s，>3s 的空白大概率是多个漏检和弦或扫弦延音，不宜单和弦填充。
+            MAX_GAP_FILL_DUR = 3.0
             if len(detected) >= 2 and n_frames > 0:
                 filled = []
                 prev_end_f = 0
@@ -3378,8 +3564,8 @@ class AudioAnalyzer:
                     gap_start_f = int(t0 * sr / hop_length)
                     gap_frames = gap_start_f - prev_end_f
                     gap_dur = gap_frames * hop_length / sr
-                    # 只填充中间间隙（跳过开头空白）且 > 1.2s
-                    if prev_end_f > 0 and gap_dur > 1.2 and gap_frames >= 10:
+                    # 只填充中间间隙（跳过开头空白），时长在 (1.2, 6.0]s 内
+                    if prev_end_f > 0 and 1.2 < gap_dur <= MAX_GAP_FILL_DUR and gap_frames >= 10:
                         f0, f1 = prev_end_f, gap_start_f
                         gap_c = np.mean(chroma_final[:, f0:f1], axis=1)
                         # 用原始 cosine 相似度（无惩罚），避免复杂度惩罚偏置三和弦
@@ -3871,6 +4057,28 @@ class AudioAnalyzer:
         except Exception as e:
             logger.warning(f"起始检测失败: {e}")
             return 0.0
+
+    @staticmethod
+    def _filter_pre_onset_notes(notes: List[Dict], onset_time: float, tolerance: float = 0.2) -> List[Dict]:
+        """过滤演奏开始前的幻音。
+
+        basic-pitch 会把准备期噪声（拿琴、调弦、碰弦）转录成音符，这些音符若
+        进入节奏/和弦检测、或作为 first_note_time 驱动手型时间基准，会在用户
+        尚未开始弹奏的 0~N 秒处误报错误。以 playing_onset 为界，容差内
+        （onset-tolerance）的音符保留，更早的全部丢弃。
+
+        Args:
+            notes: 转录音符列表 [{start_time, end_time, ...}]
+            onset_time: 演奏起始时间（秒），<=0 表示未检测到、不过滤
+            tolerance: 起始检测滞后容差（秒），onset-tolerance 之前的音符才丢弃
+
+        Returns:
+            过滤后的音符列表
+        """
+        if not notes or onset_time <= 0:
+            return notes
+        cutoff = onset_time - tolerance
+        return [n for n in notes if n.get("start_time", 0) >= cutoff]
 
     def _track_beats(self, audio: np.ndarray, sr: int = 16000,
                       onset_time: float = 0.0) -> Dict:
@@ -4675,7 +4883,54 @@ class AudioAnalyzer:
         return _midi_to_note_name(midi_pitch)
 
     @staticmethod
-    def _detect_phrase_gaps(notes: List[Dict]) -> Dict:
+    def _compute_chord_dominance(detected_chords: List[Dict], audio_duration: Optional[float] = None) -> Dict:
+        """计算和弦序列的主导性：主导和弦按时长占比是否 ≥70%。
+
+        单和弦视频（如整段弹 C）即使弹得差、被误报出 G/Am 等短片段，
+        主导和弦仍占绝对多数。is_single=True 时下游应豁免「换和弦」类判断。
+        """
+        if not detected_chords:
+            return {"is_single": False, "dominant_chord_id": "", "dominant_chord_name": "", "dominant_ratio": 0.0}
+        durations = {}
+        total = 0.0
+        for c in detected_chords:
+            d = c.get("end_time", c.get("time", 0)) - c.get("time", 0)
+            if d <= 0:
+                continue
+            cid = c.get("chord_id", "")
+            if not cid:
+                continue
+            durations[cid] = durations.get(cid, 0.0) + d
+            total += d
+        if total <= 0 or not durations:
+            return {"is_single": False, "dominant_chord_id": "", "dominant_chord_name": "", "dominant_ratio": 0.0}
+        dom_cid = max(durations, key=durations.get)
+        ratio = durations[dom_cid] / total
+        dom_name = next((c.get("chord_name", dom_cid) for c in detected_chords
+                         if c.get("chord_id") == dom_cid), dom_cid)
+
+        # 检测覆盖率门槛：和弦检测只覆盖了音频的一小部分（<50%）时，
+        # 说明检测中断、大量时间没有识别出和弦，主导占比不可信。
+        # 例如「错误」视频只检出 2 段 C（覆盖率 20%），中间 12s 实际是
+        # G/Am/Em 等未检出——若据此判 single_chord 会漏报真停顿。
+        # 真单和弦视频应检出多个连续 C 段、覆盖率高，不受此门槛影响。
+        if audio_duration and audio_duration > 0 and total / audio_duration < 0.5:
+            return {
+                "is_single": False,
+                "dominant_chord_id": dom_cid,
+                "dominant_chord_name": dom_name,
+                "dominant_ratio": round(ratio, 3),
+            }
+
+        return {
+            "is_single": ratio >= 0.70,
+            "dominant_chord_id": dom_cid,
+            "dominant_chord_name": dom_name,
+            "dominant_ratio": round(ratio, 3),
+        }
+
+    @staticmethod
+    def _detect_phrase_gaps(notes: List[Dict], audio: Optional[np.ndarray] = None, sr: int = 16000) -> Dict:
         """检测音符之间的乐句间隔，使用 IOI (Inter-Onset Interval) 离群值检测。
 
         原理：
@@ -4686,6 +4941,9 @@ class AudioAnalyzer:
         - 用全量 IOI 分布计算中位数（含扫弦簇），确保基准不被拉高
         - IOI > 3x 全量中位数 且 > 0.5s → 标记为可能的换和弦停顿
         - 同时报告 top-5 最大 IOI，供 AI 辅助判断（即使未达阈值）
+        - 真实静音判别：延音时音符 end 偏早，"silent" 里其实还有弦在振动，
+          用间隙真实音频 RMS 区分「真停顿(静音)」与「延音(响)」，
+          真停顿的 IOI 阈值放宽到 2.5x中位数，延音维持保守阈值。
 
         Returns: {
             "gap_summary": "人类可读的间隔分析",
@@ -4701,44 +4959,79 @@ class AudioAnalyzer:
                     "gaps_detail": [], "top_ioi_slowdowns": []}
 
         sorted_notes = sorted(notes, key=lambda n: n.get("start_time", 0))
-        # 过滤幻音（被和弦标记为 _phantom 的音符）用于 IOI 分析
-        clean_notes = [n for n in sorted_notes if not n.get("_phantom")]
-
-        # 全量 IOI（用于计算分布基准，使用干净音符）
+        # 所有音符(含 _phantom)都参与 IOI：幻音只是「不属于当前和弦音集」的真实音符，
+        # 滤掉会让真实音符在 IOI 链上被跳过 → 下一个可见音符隔 3-4s → 停顿虚高误报。
         all_gaps = []
-        for i in range(1, len(clean_notes)):
-            g = clean_notes[i]["start_time"] - clean_notes[i - 1]["start_time"]
+        for i in range(1, len(sorted_notes)):
+            g = sorted_notes[i]["start_time"] - sorted_notes[i - 1]["start_time"]
             all_gaps.append(g)
 
         full_median = float(np.median(all_gaps))
         full_p90 = float(np.percentile(all_gaps, 90))
 
-        # 非扫弦 IOI（用于找离群值，过滤 <50ms 的同时发音，使用干净音符）
+        # 非扫弦 IOI（用于找离群值，过滤 <50ms 的同时发音）。
+        # silent = 真实静音停顿（next.start - prev.end），延音不算停顿，
+        #           这是用户感知的「停顿了多久」，IOI 会把前一个音的延音也算进去。
         ioi_entries = []
-        for i in range(1, len(clean_notes)):
-            gap = clean_notes[i]["start_time"] - clean_notes[i - 1]["start_time"]
+        for i in range(1, len(sorted_notes)):
+            gap = sorted_notes[i]["start_time"] - sorted_notes[i - 1]["start_time"]
             if gap >= 0.05:
+                prev_end = sorted_notes[i - 1].get("end_time", sorted_notes[i - 1]["start_time"])
+                silent = max(0.0, sorted_notes[i]["start_time"] - prev_end)
                 ioi_entries.append({
-                    "time": round(clean_notes[i - 1]["end_time"], 1),
+                    "time": round(prev_end, 1),
                     "gap": round(gap, 2),
+                    "silent": round(silent, 2),
+                    "prev_end": prev_end,
+                    "next_start": sorted_notes[i]["start_time"],
                 })
 
         if len(ioi_entries) < 3:
             return {"gap_summary": "", "has_large_gaps": False, "ioi_median": round(full_median, 2),
                     "ioi_p90": round(full_p90, 2), "gaps_detail": [], "top_ioi_slowdowns": []}
 
-        # 离群值检测：使用更保守的阈值区分延音和真正的停顿
-        # 延音是正常的音乐表达，只有超长间隔才可能是换和弦不流畅
-        # 阈值 = max(5x中位数, 2xP90, 1.2s) — 多重保护避免误报
-        outlier_threshold = max(full_median * 5.0, full_p90 * 2.0, 1.2)
+        # 真实静音判别：延音时音符 end 偏早，"silent" 里其实还有弦在振动（RMS 接近整曲均值），
+        # 真停顿的间隙则是接近噪底（RMS 远低于整曲均值）。据此把「真停顿」的 IOI 阈值
+        # 放宽到 2.5x中位数，把「延音」维持保守阈值，既不漏报短空拍，也不误报延音。
+        overall_rms = 0.0
+        if audio is not None and len(audio) > sr:
+            overall_rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+        for x in ioi_entries:
+            ratio = 1.0
+            if overall_rms > 1e-6 and x["silent"] > 0.05:
+                s0 = int(x["prev_end"] * sr)
+                s1 = int(x["next_start"] * sr)
+                if s1 > s0:
+                    gap_rms = float(np.sqrt(np.mean(audio[s0:s1].astype(np.float64) ** 2)))
+                    ratio = gap_rms / overall_rms
+            x["gap_rms_ratio"] = ratio
+            x["is_real_silence"] = (x["silent"] > 0.05 and ratio < 0.55)
+
+        # 离群值检测：使用保守的阈值区分延音和真正的停顿。
+        # 全量音符参与后基线更贴近真实节奏，阈值随之放宽到 max(3x中位数, 1.8xP90, 0.9s)。
+        # 真实静音(音频确认无弦振动)用更宽的 2.5x中位数，捕获「明显空拍」这类短停顿。
+        outlier_threshold = max(full_median * 3.0, full_p90 * 1.8, 0.9)
+        real_silence_threshold = max(full_median * 2.5, 0.9)
         large_gaps = []
         for x in ioi_entries:
-            if x["gap"] > outlier_threshold:
+            thresh = real_silence_threshold if x["is_real_silence"] else outlier_threshold
+            if x["gap"] > thresh:
+                # duration = 真实静音停顿（延音不算，用户感知的时长）；ioi = 起音间隔（用于离群判断）
                 large_gaps.append({
                     "time": x["time"],
-                    "duration": x["gap"],
-                    "context": f"t={x['time']:.1f}s处起音间隔{x['gap']:.1f}s",
+                    "duration": x["silent"] if x["silent"] > 0.05 else x["gap"],
+                    "ioi": x["gap"],
+                    "is_real_silence": x["is_real_silence"],
+                    "gap_rms_ratio": round(x["gap_rms_ratio"], 2),
+                    "context": f"t={x['time']:.1f}s处实际停顿约{x['silent']:.1f}s（起音间隔{x['gap']:.1f}s，含延音）",
                 })
+
+        # 结尾手去录视频：最后一个音符之前的短间隙是「收尾动作」不是换和弦停顿。
+        # 例: 最后一句没弹、手去按停止键 → 结尾处出现 0.9s 假停顿。
+        # 用「间隙位置距录音结尾 < 1.5s」过滤，避免把收尾动作报成停顿。
+        if large_gaps and sorted_notes:
+            rec_end = max(n.get("end_time", n.get("start_time", 0)) for n in sorted_notes)
+            large_gaps = [g for g in large_gaps if (rec_end - g["time"]) > 1.5]
 
         # 为每个大间隔计算局部 IOI 上下文（周围的节奏均匀度）
         for g in large_gaps:
@@ -4760,10 +5053,10 @@ class AudioAnalyzer:
         top_slowdowns = []
         for x in sorted_ioi[:5]:
             top_slowdowns.append(
-                f"⏱ {x['time']:.1f}s处起音间隔{x['gap']:.2f}s"
+                f"⏱ {x['time']:.1f}s处实际停顿约{x['silent']:.2f}s（起音间隔{x['gap']:.2f}s）"
             )
 
-        total_notes = len(clean_notes)
+        total_notes = len(sorted_notes)
         gap_summary = (
             f"共{total_notes}个音符，全量IOI中位数{full_median:.2f}s，P90={full_p90:.2f}s。"
             f"离群阈值={outlier_threshold:.2f}s。"
@@ -4780,7 +5073,7 @@ class AudioAnalyzer:
             gap_summary += "未发现超过阈值的IOI间隔拉长。"
         if top_slowdowns:
             gap_summary += (
-                " 全曲最慢的5处起音间隔：" + "；".join(top_slowdowns)
+                " 全曲最慢的5处音符衔接：" + "；".join(top_slowdowns)
                 + "。请结合这些位置判断是否存在换和弦不流畅的情况。"
             )
 
@@ -4794,7 +5087,7 @@ class AudioAnalyzer:
         }
 
     @staticmethod
-    def _gaps_to_errors(gap_analysis: Dict) -> List[Dict]:
+    def _gaps_to_errors(gap_analysis: Dict, single_chord: bool = False) -> List[Dict]:
         """将确定性间隔检测结果转换为 transition_gap 错误。
 
         绕过 LLM，确保每次运行都能稳定检测到换和弦停顿。
@@ -4803,24 +5096,38 @@ class AudioAnalyzer:
         - 间隔与局部上下文一致（周围也都是长间隔）→ 延音，不报
         """
         errors = []
+        if single_chord:
+            # 单和弦视频（主导和弦≥70%）：停顿是乐句/节奏表现，不是换和弦不流畅
+            return errors
         gaps_detail = gap_analysis.get("gaps_detail", [])
         if not gaps_detail:
             return errors
 
         for g in gaps_detail:
+            is_real_silence = g.get("is_real_silence", False)
             duration = g.get("duration", 0)
-            if duration < 0.8:
+            # 真实静音(音频确认间隙里没弦振动)即使较短也算「明显空拍」；延音维持 0.8s 下限
+            min_dur = 0.4 if is_real_silence else 0.8
+            if duration < min_dur:
                 continue
 
             local_cv = g.get("local_ioi_cv")
             local_median = g.get("local_ioi_median")
             context = g.get("context", "")
+            # 离群判断用起音间隔 IOI（与 local_median 同单位）；
+            # duration 是真实静音停顿，只用于严重度与文案（避免把延音报进停顿）
+            ioi = g.get("ioi", duration)
 
             # 间隔是否在局部上下文中显著偏大？（延音 vs 卡顿的核心判断）
-            is_local_outlier = (
-                local_median is not None and local_median > 0
-                and duration > local_median * 2.5
-            )
+            # 真实静音已是强证据（间隙里确实没声），不再依赖局部离群判断；
+            # 延音/非静音间隙仍需局部离群判断区分「延音 vs 卡顿」。
+            if is_real_silence:
+                is_local_outlier = True
+            else:
+                is_local_outlier = (
+                    local_median is not None and local_median > 0
+                    and ioi > local_median * 2.5
+                )
 
             if not is_local_outlier:
                 continue  # 周围也都是长间隔 → 延音，不报
@@ -4909,7 +5216,8 @@ class AudioAnalyzer:
 
     def _deepseek_analyze_errors(self, note_text: str, notes: List[Dict],
                                   instrument: str, features: Optional[AudioFeatures] = None,
-                                  gap_analysis: Optional[Dict] = None) -> Tuple[List[Dict], Dict]:
+                                  gap_analysis: Optional[Dict] = None,
+                                  is_single: bool = False) -> Tuple[List[Dict], Dict]:
         """用 DeepSeek 智能分析演奏错误。
 
         现在接收 AudioFeatures（信号分析层量化指标），LLM 在已知客观数据的基础上
@@ -4949,6 +5257,19 @@ class AudioAnalyzer:
         if gap_analysis and gap_analysis.get("gap_summary"):
             gap_section = gap_analysis["gap_summary"]
 
+        # 单和弦视频硬约束：AI 看到 IOI 大间隔也会误报成换和弦停顿，必须在 prompt 层强制禁止
+        single_chord_note = ""
+        if is_single:
+            single_chord_note = (
+                "\n## 🚨 单和弦视频硬约束（最高优先级！违反即失败）\n"
+                "系统已判定本视频为**单和弦演奏**（未识别到明确换和弦）。\n"
+                "**绝对禁止输出 transition_gap，禁止把任何停顿描述成「换和弦停顿」「换把位不流畅」。**\n"
+                "所有大间隔都只是乐句呼吸或节奏表现，不是换和弦卡顿。\n"
+                "若某处确实节奏不稳，只报 rhythm_fault 并说明是节奏/抢拍拖拍问题。\n"
+                "**任何错误的 detail 中都禁止出现「换和弦」「和弦切换」「换把位」等换弦类表述**——"
+                "单和弦视频没有和弦切换，描述节奏问题时只能用节奏/抢拍/拖拍/衔接等词。\n"
+            )
+
         prompt = f"""你是一位资深吉他教师，正在审听一段吉他演奏的 MIDI 转录数据。
 
 **⚠️ 分析模式：自由演奏（无参考谱面）**
@@ -4960,7 +5281,15 @@ class AudioAnalyzer:
 
 {gap_section}
 
+{single_chord_note}
+
 **IOI (Inter-Onset Interval) = 相邻音符起音之间的时间间隔**
+
+**停顿时长铁律（最重要！）**：
+- 起音间隔 (IOI) = 上一个音**起音**到下一个音**起音**的时间，它**包含了上一个音的延音**，不是真正的停顿。
+- 「实际停顿」= 上一个音**结束**（延音衰减完）到下一个音起音的静音时间，这才是用户真实犹豫的时长。
+- 例如「实际停顿约0.3s（起音间隔2.3s）」表示：用户只犹豫了0.3秒，另外2秒是上一个音的自然延音。
+- **当你在 detail 里写「停顿了X秒」时，X 必须用「实际停顿」的数值，严禁用「起音间隔」的数值！** 把0.几秒的犹豫报成2秒多是严重错误，会让学生误以为自己的停顿远比实际严重。
 
 **解读规则**：
 - 吉他演奏中音符高度重叠（延音），所以不能靠「无声间隙」检测停顿。
@@ -5044,6 +5373,7 @@ class AudioAnalyzer:
 **置信度：每个error必须带confidence字段(0.0-1.0)，<0.5的不要报。**
 **定量标准：相邻音差距超过半音(>1 semitone)且持续>0.15s才可能是错音。单个音的微小pitch波动(<0.5半音)是揉弦/颤音，不算错误。**
 **节奏瑕疵：只有明确听到节奏不均匀、抢拍、拖拍时才报告。如果整体节奏感好，不要为了凑数报低置信度的节奏问题。**
+**节奏「偏快/偏慢」的定量标准（铁律）：只有起音偏差超过约100毫秒（人耳能明显感知的抢拍/拖拍）才报 rhythm_fault。50-100ms 的微小时间波动人脑完全感觉不到，是正常演奏误差，一律不报。如果你自己都听不出具体哪一拍抢了/拖了，就不要报 rhythm_fault。**
 
 **⚠️ 自检（输出 JSON 之前必须做！）：**
 1. errors 应该驱动 scores，而非反过来。先判断有哪些问题，再根据问题给分。不要先打分再凑错误。
@@ -5131,7 +5461,11 @@ class AudioAnalyzer:
                 # 置信度过滤 + 最多3个错误
                 # 0.55 阈值：允许 AI 以低置信度标记的疑似问题通过，避免漏报
                 errors = [e for e in errors
-                          if e.get("confidence", 0.0) >= 0.55][:3]
+                          if e.get("confidence", 0.0) >= 0.55]
+                # 单和弦视频：AI 也可能把大间隔误报成换和弦停顿，先于 [:3] 截断确定性剔除
+                if is_single:
+                    errors = [e for e in errors if e.get("type") != "transition_gap"]
+                errors = errors[:3]
                 # 归一化：LLM可能输出0-10分制
                 for sk in ['pitch_accuracy', 'rhythm_accuracy', 'overall_score']:
                     val = stats.get(sk)
@@ -5266,6 +5600,145 @@ class AudioAnalyzer:
         logger.info(
             f"闷音检测: {len(low_vel_notes)}/{total_notes} 低力度音符 ({low_ratio:.1%}), "
             f"聚类为 {len(errors)} 个闷音区域, velocity P5={audio_features.velocity_p5:.0f}"
+        )
+        return errors
+
+    def _spectral_flatness(self, seg: np.ndarray) -> float:
+        """频谱平坦度 = 几何平均/算术平均 of FFT（0=纯音谐波，1=白噪声）。"""
+        if len(seg) < 128:
+            return -1.0
+        spec = np.abs(np.fft.rfft(seg * np.hanning(len(seg))))
+        spec = spec[spec > 1e-10]
+        if len(spec) == 0:
+            return 1.0
+        return float(np.exp(np.mean(np.log(spec))) / np.mean(spec))
+
+    def _pitch_range_semitones(self, audio: np.ndarray, sr: int, t: float, dur: float = 0.5) -> float:
+        """onset 后 dur 秒内 f0 范围（半音）。
+
+        换弦/滑弦滑音的音高连续滑动 → 范围大(>3 半音)；闷音/稳定音 → 范围小(<1 半音)
+        或无音高(返回 0)。用于过滤 flatness 把滑音误判成闷音的假阳性。
+        """
+        s = int(t * sr)
+        seg = audio[s:s + int(dur * sr)]
+        if len(seg) < 2048:
+            return 0.0
+        try:
+            f0, _, _ = librosa.pyin(seg.astype(np.float64), fmin=60, fmax=1000,
+                                    sr=sr, frame_length=2048, hop_length=128)
+        except Exception:
+            return 0.0
+        voiced = f0[~np.isnan(f0)]
+        if len(voiced) < 5:
+            return 0.0
+        fmin = float(np.min(voiced))
+        fmax = float(np.max(voiced))
+        if fmin <= 0:
+            return 0.0
+        return 12.0 * np.log2(fmax / fmin)
+
+    def _detect_dead_notes_flatness(self, audio: np.ndarray, sr: int = 16000) -> List[Dict]:
+        """频谱平坦度方案检测闷音/呲音（没弹响的弦）。
+
+        用户需求：只抓「明显的音」里音色闷/哑的拨弦，告知用户；不碰六根弦齐响、不假设节奏。
+        「明显的音」= 能量门控（peak 足够高的拨弦），「闷」= flatness > 0.30（噪声谱）。
+        数据验证（对比组 + 错误视频）：peak 门控把明显拨弦(0.09~0.51)与擦弦/碰弦噪声
+        (0.013~0.066)一刀切；明显音里 flatness 干净分离响(<0.15)/闷(>0.30)，与音量无关。
+        阈值取 0.30 而非 0.22：全量回归发现 flat 0.22~0.29 的 medium 档在「正常/标准/间断」
+        等干净视频上全是换弦/碰弦假阳性（flat 0.22~0.29），与真闷音里唯一落在该区间的
+        22.4s(flat 0.26) 在 flatness/peak 上完全重叠，无法干净分离。故只报「明确的闷音」
+        (flat>0.30)，medium 档整体砍掉，避免污染干净视频。
+        """
+        errors = []
+        if audio is None or len(audio) < sr:
+            return errors
+
+        # 1. onset 定位：spectral flux + backtrack + 合并 <0.45s + 对齐能量峰
+        try:
+            env = librosa.onset.onset_strength(y=audio.astype(np.float32), sr=sr, hop_length=512)
+            frames = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=512,
+                                                backtrack=True, units='frames')
+            times = sorted(f * 512 / sr for f in frames)
+        except Exception:
+            return errors
+        merged = []
+        for t in times:
+            if not merged or t - merged[-1] > 0.45:
+                merged.append(t)
+        onsets = []
+        for t in merged:
+            s = int(t * sr)
+            lo = max(0, s - int(0.04 * sr))
+            hi = min(len(audio), s + int(0.04 * sr))
+            if hi > lo:
+                onsets.append((lo + int(np.argmax(np.abs(audio[lo:hi])))) / sr)
+
+        # 2. 每个 onset 的 peak（80ms 窗），用于能量门控
+        peaks = []
+        for t in onsets:
+            s = int(t * sr)
+            seg = audio[s:s + int(0.08 * sr)]
+            if len(seg) < 128:
+                continue
+            peaks.append((t, float(np.max(np.abs(seg)))))
+        if len(peaks) < 2:
+            return errors
+
+        # 能量门控（相对化）：明显音 = peak ≥ 0.5 × P85(onset peaks)，下限 0.05。
+        # 相对化避免不同录音响度漂移。
+        peak_vals = sorted(p for _, p in peaks)
+        p85 = peak_vals[min(len(peak_vals) - 1, int(len(peak_vals) * 0.85))]
+        gate = max(0.05, 0.5 * p85)
+        # 极闷音（flat>0.40，弦明显打品/没按实）哪怕音量偏低也判；门控放宽到正常的一半，
+        # 解决 8.20_tjx 里 peak 0.12 的真闷音被 peak 0.478 的响音把 P85 拉爆后误挡的问题。
+        gate_lenient = max(0.05, 0.25 * p85)
+
+        # 3. 判闷：onset 后扫 0~200ms，取 80ms 窗 flatness 最大值（避免对齐偏差漏判）
+        win = int(0.08 * sr)
+        span = int(0.20 * sr)
+        step = int(0.02 * sr)
+        for t, pk in peaks:
+            s = int(t * sr)
+            flat_max = -1.0
+            for off in range(0, span, step):
+                seg = audio[s + off:s + off + win]
+                if len(seg) < 128:
+                    continue
+                fl = self._spectral_flatness(seg)
+                if fl > flat_max:
+                    flat_max = fl
+            if flat_max <= 0.30:
+                continue
+            if pk < (gate_lenient if flat_max > 0.40 else gate):
+                continue
+
+            # 滑音过滤器：仅 medium 档(flat≤0.40)可能把「音符切换」误判成闷音——flat 扫过
+            # 两个相邻音符的 80ms 窗会摊平频谱，音高轨迹里 pyin 因 octave 跳变给出大范围
+            # (>3半音)，用它识别并跳过。high 档(flat>0.40)是明确闷音(噪声谱)，音高范围
+            # 同样会被 octave 误差虚高，跳过会误杀真闷音(如 8.20_tjx 6.29s flat0.48)。
+            if flat_max <= 0.40 and self._pitch_range_semitones(audio, sr, t) > 3.0:
+                continue
+
+            if flat_max > 0.40:
+                severity = "high"
+            else:
+                severity = "medium"
+            errors.append({
+                "type": "dead_note",
+                "time": round(t, 1),
+                "end_time": round(t + 0.2, 1),
+                "detail": (
+                    f"约{round(t, 1)}s处有一个音没弹响，声音发闷，"
+                    f"可能是手指没按实品格（琴弦没按紧）。"
+                ),
+                "severity": severity,
+                "confidence": round(min(0.95, 0.6 + flat_max * 0.5), 2),
+                "_source": "flatness",
+            })
+
+        logger.info(
+            f"闷音检测(flatness): 明显音 {sum(1 for _, p in peaks if p >= gate)}/{len(peaks)} 个, "
+            f"gate={gate:.3f}, 报 {len(errors)} 个呲音"
         )
         return errors
 

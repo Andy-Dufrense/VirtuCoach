@@ -6,6 +6,7 @@ MediaPipe 手部关键点检测（本地毫秒级）+ 超时保护
 import os
 import cv2
 import json
+import time
 import numpy as np
 from typing import Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
@@ -18,6 +19,15 @@ logger = get_logger(__name__)
 TIMEOUT_SECONDS = 45  # 整个视频处理超时（秒），需覆盖80帧检测+截图
 # 慢解码编码：OpenCV 逐帧 seek 需从关键帧全分辨率解码，1080p60 下每帧 seek 可达秒级
 PROXY_TRIGGER_CODECS = {"hevc", "h265", "vp9", "av1", "mpeg4"}
+
+# ── 右手腕快速采样通道（逐次扫弦检测） ──
+# 主检测循环按 3fps 关键帧采样（FRAME_INTERVAL_SEC=0.3），而单次扫弦动作仅
+# 100-250ms——3fps 下每次扫弦最多采到 1 帧，Y 速度过零检测物理上不工作。
+# 此通道用降采样小图顺序解码，以 ~15fps 只跟踪拨弦手手腕。
+WRIST_TRACK_FPS = 15.0          # 目标采样率
+WRIST_TRACK_WIDTH = 320         # 降采样宽度（推理成本 ∝ 像素数）
+WRIST_TRACK_MAX_FRAMES = 2700   # 处理帧数上限（~180s @15fps）
+WRIST_TRACK_TIME_BUDGET = 90.0  # 墙钟预算（秒），超时用已有数据
 
 
 def _pick_best_snapshot_time(group: list, hand_issue_frames: list) -> float:
@@ -118,6 +128,25 @@ class VideoProcessor:
             }
         except Exception as e:
             logger.warning(f"ffprobe 失败: {e}")
+            # ffprobe 不在 PATH 时用 PyAV 兜底（自带 FFmpeg 解码库）
+            try:
+                import av
+                with av.open(video_path) as c:
+                    v = next((s for s in c.streams if s.type == "video"), None)
+                    if v is None:
+                        return None
+                    vc = v.codec_context
+                    _fps = float(v.average_rate) if v.average_rate else 0.0
+                    _dur = float(v.duration * v.time_base) if v.duration else 0.0
+                    return {
+                        "codec": (vc.codec.name or "").lower(),
+                        "width": int(vc.width or 0),
+                        "height": int(vc.height or 0),
+                        "fps": _fps,
+                        "duration": _dur,
+                    }
+            except Exception as _e:
+                logger.warning(f"PyAV probe 失败: {_e}")
             return None
 
     def _make_proxy_video(self, video_path: str, out_path: Optional[str] = None) -> Optional[str]:
@@ -135,8 +164,9 @@ class VideoProcessor:
             fd, proxy = tempfile.mkstemp(suffix=".mp4", prefix="vcproxy_")
             os.close(fd)
         try:
+            from config import FFMPEG_PATH
             r = subprocess.run(
-                ["ffmpeg", "-y", "-v", "error", "-i", video_path,
+                [FFMPEG_PATH, "-y", "-v", "error", "-i", video_path,
                  "-vf", "scale=-2:720", "-r", "30",
                  "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
                  "-c:a", "aac", "-b:a", "128k", proxy],
@@ -158,7 +188,8 @@ class VideoProcessor:
                 technique_segments: Optional[List[Dict]] = None,
                 force_hand: Optional[str] = None,
                 detected_chords: Optional[List[Dict]] = None,
-                proxy_dest: Optional[str] = None) -> Dict:
+                proxy_dest: Optional[str] = None,
+                pause_gaps: Optional[List] = None) -> Dict:
         """处理视频（带超时保护）。
 
         Args:
@@ -170,6 +201,8 @@ class VideoProcessor:
             proxy_dest: 可选，代理视频的留存路径。给定时生成的 H.264 代理不删除，
                         并通过 result["proxy_path"] 返回，供前端回放（HEVC 等浏览器
                         无法解码的视频用它播放）；不给定时行为不变（临时代理用完即删）。
+            pause_gaps: 可选，音频停顿区间 [(静音起点, 静音终点)]，用于换和弦
+                        过渡门控（离弦/落指期手指角度无意义，V4 手型误报）。
         """
         result = {
             "frames_analyzed": 0, "total_frames_extracted": 0,
@@ -199,7 +232,7 @@ class VideoProcessor:
 
         try:
             with ThreadPoolExecutor() as pool:
-                future = pool.submit(self._process_internal, actual_path, error_timestamps, instrument, technique_hints, technique_segments, force_hand, detected_chords)
+                future = pool.submit(self._process_internal, actual_path, error_timestamps, instrument, technique_hints, technique_segments, force_hand, detected_chords, pause_gaps)
                 try:
                     result = future.result(timeout=timeout)
                 except TimeoutError:
@@ -236,12 +269,17 @@ class VideoProcessor:
                           technique_hints: Optional[List[str]] = None,
                           technique_segments: Optional[List[Dict]] = None,
                           force_hand: Optional[str] = None,
-                          detected_chords: Optional[List[Dict]] = None) -> Dict:
+                          detected_chords: Optional[List[Dict]] = None,
+                          pause_gaps: Optional[List] = None) -> Dict:
         """内部处理逻辑"""
         self._mirror_detected = False
         self._camera_angle = "unknown"
         self._force_hand = force_hand
         self._detected_chords = detected_chords  # Phase 2b 使用
+        self._pause_gaps = [(float(a), float(b)) for a, b in (pause_gaps or [])]
+        # 首个和弦段起点：之前为开场定位期（手在移动/搭位），角度检测无意义
+        self._first_chord_start = (min((c.get("time", 0) for c in detected_chords), default=None)
+                                    if detected_chords else None)
 
         detector = self._create_detector()  # 每次视频创建新探测器，避免时间戳不单调
 
@@ -275,6 +313,8 @@ class VideoProcessor:
         hands_detected_anywhere = False
         wrist_x_samples = []  # 左手腕x坐标采样，用于估算手区品数
         all_hand_landmarks = []  # 累积所有帧检测到的手部 landmarks
+        left_angle_samples = []  # 左手逐帧角度采样，用于和弦段中位数复核（抗 ±60° 噪声）
+        left_wrist_prev = None  # 上一左手帧腕点 (ts, xy)，用于换和弦过渡速度门控
 
         # 多帧一致性追踪: {(handedness, issue_sig): [consecutive_count, gap_count]}
         # 需连续≥3帧确认才报告，容忍1帧短暂消失
@@ -321,17 +361,12 @@ class VideoProcessor:
 
                     wrist_x = hlm[0].x
 
-                    # 镜像自动检测：前置摄像头画面中，左手(按弦手)出现在画面右侧
-                    # 如果 MediaPipe 说 "Left" 但手腕在画面右侧(wrist_x > 0.5)，说明是镜像画面
-                    if not self._mirror_detected and handedness != "unknown" and handedness_confidence > 0.6:
-                        label_says_left = (handedness == "Left")
-                        hand_on_right = (wrist_x > 0.5)
-                        if label_says_left and hand_on_right:
-                            self._mirror_detected = True
-                            logger.info(f"[mirror] auto-detected mirror (front camera), wrist_x={wrist_x:.2f}")
-                        elif not label_says_left and not hand_on_right:
-                            self._mirror_detected = True
-                            logger.info(f"[mirror] auto-detected mirror (front camera), wrist_x={wrist_x:.2f}")
+                    # 镜像自动检测已移除（2026-08-25）：该启发式把「Left@画面右 /
+                    # Right@画面左」判为镜像，而这恰是面对摄像机的正常非镜像布局
+                    # （按弦手左手在画面右侧、拨弦手右手在画面左侧，MP 解剖学标签
+                    # 与之天然一致）。实测 23 个验收+测试视频全部被误报镜像，导致
+                    # 15fps 腕通道跟错手或零数据。且双手可见时镜像/非镜像的
+                    # 「标签+位置」签名相同，位置规则原理上无法区分，故不再自动翻转。
 
                     # 镜像画面翻转 handedness：前置摄像头左右颠倒，MP 解剖学分类可能误判。
                     # 例如左手（按弦手）在前置摄像头中出现在画面右侧，MP 可能标为 "Right"
@@ -392,6 +427,7 @@ class VideoProcessor:
                     # Phase 2b: 查找当前帧对应的和弦上下文
                     chord_ctx = {}
                     chord_id_matched = None
+                    seg_start = None
                     dc = getattr(self, '_detected_chords', None)
                     if dc and handedness == "Left":
                         for chord in dc:
@@ -400,6 +436,7 @@ class VideoProcessor:
                             if ct - 0.3 <= ts <= c_end + 0.3:
                                 cid = chord.get("chord_id", "")
                                 if cid:
+                                    seg_start = ct
                                     try:
                                         from db.knowledge_db import knowledge_db as kdb
                                         chord_ctx = kdb.get_chord_angle_standards(cid)
@@ -411,10 +448,65 @@ class VideoProcessor:
                         logger.debug(f"[chord-match] ts={ts:.1f}s → {chord_id_matched} kb_fingers={list(chord_ctx.keys())}")
                     elif chord_id_matched:
                         logger.debug(f"[chord-match] ts={ts:.1f}s → {chord_id_matched} (no finger angles in KB)")
-                    issues = self._detect_issues_with_chord(angles, handedness, instrument, chord_ctx)
+
+                    # Phase 2d: 换和弦过渡门控（V4 手型误报主因）。
+                    # 落指期手指伸展够弦、手腕在移动，MCP 读数天然偏低（实测 16-24），
+                    # 被误判「指根竖直/筷子手」，且逐次出现中位数保留机制会固化该误报。
+                    # 四个判据（满足任一即视为过渡帧，左手跳过角度检测与采样）：
+                    #   1) 和弦段起始 settle 窗：ts < 段起点 + 0.7s
+                    #   2) 手腕快速移动：相邻左手帧腕点位移速度 > 0.35（归一化坐标/s）
+                    #   3) 开场定位期：ts < 首个和弦段起点 - 0.3s（手还在搭位，
+                    #      无和弦上下文走通用阈值，7.29-1645 1.5s「无名指太弯」误报）
+                    #   4) 停顿窗口：音频停顿区间前 0.6s（离弦释放）到后 0.3s（落指），
+                    #      7.29-1645 17.2s「中指太弯」误报在 17.5s 停顿前 0.3s
+                    in_transition = False
+                    if handedness == "Left":
+                        SETTLE_S = 0.7
+                        WRIST_SPEED_MAX = 0.35
+                        if seg_start is not None and ts < seg_start + SETTLE_S:
+                            in_transition = True
+                        fcs = getattr(self, '_first_chord_start', None)
+                        if fcs is not None and ts < fcs - 0.3:
+                            in_transition = True
+                        for gs, ge in getattr(self, '_pause_gaps', []):
+                            if gs - 0.6 <= ts <= ge + 0.3:
+                                in_transition = True
+                                break
+                        w0 = hlm[0]
+                        wxy = (w0.x, w0.y)
+                        prev = left_wrist_prev
+                        if prev is not None:
+                            dt = ts - prev["ts"]
+                            if dt > 1e-3:
+                                dist = ((wxy[0] - prev["xy"][0]) ** 2 + (wxy[1] - prev["xy"][1]) ** 2) ** 0.5
+                                speed = dist / dt
+                                if speed > WRIST_SPEED_MAX:
+                                    in_transition = True
+                        left_wrist_prev = {"ts": ts, "xy": wxy}
+                        if in_transition:
+                            logger.debug(f"[transition-gate] ts={ts:.1f}s 左手过渡帧，跳过角度检测")
+
+                    issues = [] if (handedness == "Left" and in_transition) else \
+                        self._detect_issues_with_chord(angles, handedness, instrument, chord_ctx)
+                    # force_hand：和弦检查等场景只关心目标手，另一只手（如扫弦右手）
+                    # 的帧级角度检测跳过——右手扫弦时手指自然张合/握拨片姿态，
+                    # 用静态阈值判「紧张/蜷曲」全是误报（V4：多视频被报右手捏太紧）。
+                    if issues and self._force_hand:
+                        expected_hand = "Left" if self._force_hand == "left" else "Right"
+                        if handedness != expected_hand:
+                            issues = []
                     lm_list = [(lm.x, lm.y, lm.z) for lm in hlm]
                     frame_landmarks.append(lm_list)
                     all_hand_landmarks.append({"time": round(ts, 2), "hand": handedness, "landmarks": lm_list})
+                    if handedness == "Left" and angles and not in_transition:
+                        # 累积角度采样供中位数复核；lm 供复核命中时做代表性帧截图
+                        left_angle_samples.append({
+                            "ts": ts,
+                            "angles": angles,
+                            "chord_id": chord_id_matched,
+                            "lm": lm_list,
+                            "handedness_confidence": handedness_confidence,
+                        })
 
                     if issues:
                         for iss in issues:
@@ -451,6 +543,69 @@ class VideoProcessor:
 
         # 释放手部检测用的cap，截图阶段用新cap避免seek状态污染
         cap.release()
+
+        # ===== 左手角度中位数复核：消除逐帧 MediaPipe 3D 噪声的假阳性 =====
+        # 单帧角度 ±60° 摆动，逐帧判单个手指问题不可靠（如无名指 PIP 26°↔155°）。
+        # 取和弦段内角度中位数做稳定判决：中位数判定某手指「没问题」→ 丢弃该手指的逐帧误报。
+        # 仅对有用 KB 驱动检测的和弦段生效，不改通用检测行为。
+        if left_angle_samples:
+            try:
+                from db.knowledge_db import knowledge_db as kdb
+            except Exception:
+                kdb = None
+            left_groups = {}
+            for s in left_angle_samples:
+                left_groups.setdefault(s.get("chord_id"), []).append(s)
+            median_ok_fingers = {}
+            severe_fingers = {}  # 同和弦某次出现里仍判 ⚠️ 的手指（仅 PIP 类），合并中位数稀释后仍需保留
+            for cid, seg in left_groups.items():
+                if len(seg) < 3:
+                    continue
+                med = self._median_angles(seg)
+                if not med:
+                    continue
+                chord_ctx = {}
+                if cid and kdb is not None:
+                    try:
+                        chord_ctx = kdb.get_chord_angle_standards(cid)
+                    except Exception:
+                        chord_ctx = {}
+                if not chord_ctx:
+                    continue
+                stable_issues = self._detect_left_hand_issues(med, chord_ctx)
+                stable_fingers = self._issue_fingers(stable_issues)
+                median_ok_fingers[cid] = (set(self.FINGER_CN.values()) | {"手腕"}) - stable_fingers
+                # 逐次出现复核：同一和弦在不同时间手型可能不同（如某次出现整段竖直、
+                # 其余正常），合并中位数会把「仅某次出现」的问题稀释成 OK，逐次判 ⚠️ 并保留。
+                # （2026-08-25 安全前提：MCP severe 分支已删除，现存 ⚠️ 均为 PIP 类——
+                #  PIP 对竖直/正常有实测区分度（c竖直 多指 PIP<30 vs wlq PIP 45-76），
+                #  此机制不会再保留 MCP 悬停噪声簇（V4 筷子手投诉根因）。）
+                OCC_GAP = 1.5  # 同和弦前后两次出现的时间间隔(s)，超此视为独立出现
+                s_sorted = sorted(seg, key=lambda s: s.get("ts", 0))
+                occ = []
+                for s in s_sorted:
+                    if occ and s.get("ts", 0) - occ[-1].get("ts", 0) > OCC_GAP:
+                        self._collect_severe_fingers(occ, chord_ctx, cid, severe_fingers)
+                        occ = []
+                    occ.append(s)
+                self._collect_severe_fingers(occ, chord_ctx, cid, severe_fingers)
+            if median_ok_fingers:
+                filtered_frames = []
+                for h in hand_issue_frames:
+                    if h.get("handedness") == "左手":
+                        cid = self._chord_id_at(h.get("timestamp", 0))
+                        ok_fingers = median_ok_fingers.get(cid)
+                        if ok_fingers is not None:
+                            text = (h.get("issues") or [""])[0]
+                            issue_fingers = self._issue_fingers([text])
+                            if issue_fingers and issue_fingers <= ok_fingers:
+                                # ⚠️ 且手指在任一次出现里被判严重 → 保留，不被合并中位数稀释误杀
+                                # （💡 仍按合并中位数丢弃，避免轻微噪声假阳性）
+                                sev = severe_fingers.get(cid) or set()
+                                if not (text.startswith("⚠️") and (issue_fingers & sev)):
+                                    continue  # 中位数判定该部位没问题 → 丢弃噪声报告
+                    filtered_frames.append(h)
+                hand_issue_frames = filtered_frames
 
         # ===== 截图：所有问题帧 + 全程均匀采样 =====
         issue_times = set()
@@ -658,7 +813,34 @@ class VideoProcessor:
                     f"floating={vl_signals['floating']}")
 
         # 右手弹奏分析：拨弦角度 + 手腕运动
-        right_hand = self._compute_right_hand_strumming(all_hand_landmarks)
+        # P0 修复：主循环 3fps 关键帧采不到 100-250ms 的扫弦动作（每次最多 1 帧），
+        # 逐次扫弦检测物理上不工作。优先用 ~15fps 轻量手腕通道的结果，
+        # 失败时回退 3fps（仍有 cluster 级 Y 标准差这个弱信号）。
+        # 门控：音频明确无扫弦段 → 跳过 15fps 腕通道（省 20-30s 解码+推理）。
+        # 腕通道数据只被扫弦下游消费（_refine_clusters_with_hand_motion /
+        # _cross_validate_strumming），无扫弦段时它们均 no-op；扫弦段进入
+        # technique_segments 的置信度 ≥0.40（音符路径下限 0.40，频谱路径合并时
+        # 已按 ≥0.5 过滤，分类器 0.25 底噪进不来），故 0.40 即为门控下限。
+        # segments 未提供（无音频路径/diag）时保守起见仍采样。
+        run_wrist_channel = technique_segments is None or any(
+            s.get("technique_id") == "strumming" and s.get("confidence", 0) >= 0.4
+            for s in technique_segments
+        )
+        if run_wrist_channel:
+            wrist_frames = self._sample_wrist_track(video_path, duration, fps)
+        else:
+            wrist_frames = []
+            logger.info("音频无扫弦段 → 跳过 15fps 腕通道（右手分析回退 3fps 主循环数据）")
+        if len(wrist_frames) >= 15:
+            right_hand = self._compute_right_hand_strumming(wrist_frames)
+            right_hand["track_fps"] = round(len(wrist_frames) / max(duration, 0.001), 1)
+            # 原始手腕轨迹留存：调参/诊断用（t 秒，x/y 归一化坐标）
+            result["wrist_track"] = [
+                {"t": f["time"], "x": f["landmarks"][0][0], "y": f["landmarks"][0][1]}
+                for f in wrist_frames
+            ]
+        else:
+            right_hand = self._compute_right_hand_strumming(all_hand_landmarks)
         result["right_hand_analysis"] = right_hand
         if right_hand["frames_used"] >= 3:
             logger.info(f"右手分析: grip={right_hand['grip_angle']:.0f}° "
@@ -1190,6 +1372,16 @@ class VideoProcessor:
             fs = angles[f].get("foreshorten", 1.0)
             zd = angles[f]["z_depth"]
 
+            # 透视缩短 (fs) 可靠性门控：手指偏对镜头时 3D 重建深度退化，角度测量不可靠。
+            # fs<0.3 完全跳过；0.3<=fs<0.85 降级为「（疑似）」+ 低一级严重度。
+            reliable = fs >= 0.85
+
+            def emit(issue):
+                if reliable or issue.startswith("💡"):
+                    issues.append(issue)
+                else:
+                    issues.append(issue.replace("⚠️", "💡", 1).replace("——", "（疑似）——", 1))
+
             # KB 转换: 内角→弯角 (180°→0°)
             kb_finger = chord_angle_standards.get(cn, {}) if use_kb else {}
             kb_pip_raw = kb_finger.get("pip_ideal")
@@ -1197,36 +1389,49 @@ class VideoProcessor:
             kb_pip_bend = (180.0 - kb_pip_raw) if kb_pip_raw is not None else None
             kb_mcp_bend = kb_mcp_raw  # MCP 已同约定
 
-            # 拇指
+            # 横按指豁免：横按手指（食指）伸直侧面压弦是正确姿势，
+            # 不能用常规角度阈值判「太竖直/太弯」，直接跳过角度检测。
+            if kb_finger.get("barre"):
+                logger.info(f"[diag] {cn}: barre finger, skip angle detection")
+                continue
+
+            # 拇指：只测位置、不判紧/松。紧度无法从关节角度可靠判断（视角/个体差异大），
+            # 且 mcp 弯角阈值与约定不匹配会全面误报「太紧」（正确手型拇指弯角仅 4-7°）。
             if f == "thumb":
-                if mcp < 60:
-                    issues.append("⚠️ 左手拇指捏得太紧或者位置太低了——拇指自然搭在琴颈上方就好，不用捏")
-                elif mcp > 160:
-                    issues.append("💡 左手拇指太直了——拇指保持自然微弯，自然搭在琴颈上方")
                 continue
 
             # 小指
             if f == "pinky":
+                # 该和弦不用小指时（KB 无小指角度条目），小指自然弯曲悬浮是正常表现（KB「正常表现」明确写出）
+                if use_kb and "小指" not in chord_angle_standards:
+                    continue
                 if pip > 170:
-                    issues.append(f"⚠️ 左手{cn}翘得太高了——小指靠近指板，随时准备帮忙")
+                    emit(f"⚠️ 左手{cn}翘得太高了——小指靠近指板，随时准备帮忙")
                 elif pip > 155:
-                    issues.append(f"💡 左手{cn}有点飞出去了——小指靠近指板一点")
+                    emit(f"💡 左手{cn}有点飞出去了——小指靠近指板一点")
                 elif pip < 40 and pip > 15:
-                    issues.append(f"💡 左手{cn}太紧张了——小指放松一点")
+                    emit(f"💡 左手{cn}太紧张了——小指放松一点")
                 if zd < -0.008:
-                    issues.append(f"⚠️ 左手{cn}塌下去了——指尖立起来")
+                    # （2026-08-25 V4：塌陷 ⚠️ 降级 💡——MediaPipe z 坐标噪声大，
+                    #  正常演奏者单帧 zd 常越过 -0.008，帧级严重误报）
+                    emit(f"💡 左手{cn}塌下去了——指尖立起来")
                 elif zd < 0:
-                    issues.append(f"💡 左手{cn}还不够立——用指尖，不要用指腹")
+                    emit(f"💡 左手{cn}还不够立——用指尖，不要用指腹")
                 continue
 
             # === index / middle / ring ===
-            # 将内角 pip (180°=直, 小=弯) 转为弯角 (0°=直, 大=弯)，与 KB 的 kb_pip_bend 对齐
-            pip_bend = 180.0 - pip
+            # 该和弦不用此指时（KB 无此指角度条目），手指自然弯曲/悬浮是正常表现，跳过角度检测（同小指逻辑）。
+            # 例：Em 只用食指+中指，无名指自然悬浮不应报「太弯/太竖直」。
+            if use_kb and cn not in chord_angle_standards:
+                continue
 
-            # 严重透视缩短 (fs<0.3): 手指直指镜头，2D角度不可靠
+            # pip 由 _calc_angles 测得，已是弯角 (0°=直, 大=弯)；KB 的 kb_pip_bend 也是弯角，直接比较
+            pip_bend = pip
+
+            # 严重透视缩短 (fs<0.3): 手指直指镜头，角度不可靠，仅极端"像筷子"直接标记
             if fs < 0.3:
-                if pip > 175:  # 内角极大→手指笔直像筷子
-                    issues.append(f"⚠️ 左手{cn}太竖直了——像筷子一样直戳在弦上，手指应该像握着鸡蛋一样自然弯曲")
+                if pip < 10:  # 弯角≈0 → 手指笔直像筷子
+                    emit(f"⚠️ 左手{cn}太竖直了——像筷子一样直戳在弦上，手指应该像握着鸡蛋一样自然弯曲")
                 logger.info(f"[diag] {cn}: pip={pip:.0f} mcp={mcp:.0f} fs={fs:.1f} (foreshortened, skipped)")
                 continue
 
@@ -1234,44 +1439,53 @@ class VideoProcessor:
             if kb_pip_bend is not None:
                 diff = kb_pip_bend - pip_bend  # positive = straighter than ideal
                 if diff > 28:
-                    issues.append(f"⚠️ 左手{cn}太竖直了——像筷子一样直戳在弦上，手指应该像握着鸡蛋一样自然弯曲")
+                    emit(f"⚠️ 左手{cn}太竖直了——像筷子一样直戳在弦上，手指应该像握着鸡蛋一样自然弯曲")
                 elif diff > 15:
-                    issues.append(f"💡 左手{cn}有点太直——放松指根，让手指像握着鸡蛋一样有点自然弧度")
+                    emit(f"💡 左手{cn}有点太直——放松指根，让手指像握着鸡蛋一样有点自然弧度")
                 elif diff < -50:
-                    issues.append(f"⚠️ 左手{cn}太弯了——手指太紧张像握拳，放松指根让弧度更自然")
+                    # （2026-08-25 V4：太弯 ⚠️ 降级 💡——正常演奏者 PIP 实测 45-76，
+                    #  KB 理想约 100-120，diff<-50 与正常区间重叠，帧级严重全是误报）
+                    emit(f"💡 左手{cn}太弯了——手指太紧张像握拳，放松指根让弧度更自然")
                 elif diff < -35:
-                    issues.append(f"💡 左手{cn}弯得有点多——手指弧度稍微放松一点")
+                    emit(f"💡 左手{cn}弯得有点多——手指弧度稍微放松一点")
             else:
                 # === 通用检测（无KB数据时） ===
                 # 注意：手指竖直站立时 PIP 也会偏小，不能误判为「太弯」
                 # 只有当 MCP 不竖直（mcp >= moderate 阈值）时，PIP 偏小才是真正的蜷指
                 mcp_not_vertical = mcp >= th["mcp_vertical_moderate"]
                 if pip > 170:
-                    issues.append(f"⚠️ 左手{cn}太竖直了——像筷子一样直戳在弦上，手指应该像握着鸡蛋一样自然弯曲")
+                    emit(f"⚠️ 左手{cn}太竖直了——像筷子一样直戳在弦上，手指应该像握着鸡蛋一样自然弯曲")
                 elif pip > 155 and mcp > 140:
-                    issues.append(f"💡 左手{cn}有点太直——手指放松，想象轻轻握着一个乒乓球")
+                    emit(f"💡 左手{cn}有点太直——手指放松，想象轻轻握着一个乒乓球")
                 elif pip < 80 and mcp_not_vertical:
-                    issues.append(f"⚠️ 左手{cn}太弯了——手指蜷得太紧像握拳，放松指根让手指自然延展")
+                    # （2026-08-25 V4：太弯 ⚠️ 降级 💡，理由同 KB 路径）
+                    emit(f"💡 左手{cn}太弯了——手指蜷得太紧像握拳，放松指根让手指自然延展")
                 elif pip < 105 and mcp_not_vertical:
-                    issues.append(f"💡 左手{cn}弯得有点多——手指弧度稍微放松一点")
+                    emit(f"💡 左手{cn}弯得有点多——手指弧度稍微放松一点")
 
-            # === MCP 检测（内角：小=弯折、大=伸直，kb_mcp_raw 已是内角） ===
-            # MCP过度弯曲 → 手指竖直戳弦（与KB「手指过于竖直」触发条件MCP<40°对齐）
+            # === MCP 检测 ===
+            # （2026-08-25 V4 修复：删除 MCP severe「筷子手/指根锁死」分支，仅保留 💡 轻提示）
+            # 根因：MediaPipe MCP 读数对竖直/正常无区分度——正确者 wlq 中位 22.85（低 MCP 帧
+            # 还伴随中指/无名指相关偏低，多指佐证门控也拦不住）、c正常 31.6、故意竖直的 c竖直
+            # 反而 39.75。任何帧级 ⚠️ 阈值都会落在正常演奏者身上（V4：所有测试者被报筷子手）。
+            # c竖直 的检出因此降级为已知局限（regress_handcheck_v3.py known_fail #3）。
             if kb_mcp_bend is not None:
                 mcp_diff = mcp - kb_mcp_bend  # positive = straighter than ideal
+                # 相机补偿：正面相机 MCP 读数系统性偏低（手指指向镜头，实测约为侧面的 0.5 倍），
+                # 因此「偏竖直」判定要比侧面更严，避免把正常按弦的延伸误判成竖直。
+                if self._camera_angle == "front":
+                    moderate_diff = -40
+                else:
+                    moderate_diff = -25
                 if mcp_diff > 35:
-                    issues.append(f"💡 左手{cn}指根太直了——指根关节应该自然弯曲，像在琴颈上搭了个小拱桥")
-                elif mcp_diff < -30:
-                    issues.append(f"⚠️ 左手{cn}太竖直了——指根过度弯曲让手指像筷子直戳在弦上，放松指根让手指有点自然弧度")
-                elif mcp_diff < -15:
-                    issues.append(f"💡 左手{cn}有点偏竖直——指根弯得偏多，手指站得太直，试着让指根自然一些")
+                    emit(f"💡 左手{cn}指根太直了——指根关节应该自然弯曲，像在琴颈上搭了个小拱桥")
+                elif mcp_diff < moderate_diff:
+                    emit(f"💡 左手{cn}有点偏竖直——指根弯得偏多，手指站得太直，试着让指根自然一些")
             else:
-                if mcp < th["mcp_vertical_severe"]:
-                    issues.append(f"⚠️ 左手{cn}太竖直了——指根过度弯曲让手指像筷子直戳在弦上，放松指根让手指有点自然弧度")
-                elif mcp < th["mcp_vertical_moderate"]:
-                    issues.append(f"💡 左手{cn}有点偏竖直——指根弯得偏多，手指站得太直，试着让指根自然一些")
+                if mcp < th["mcp_vertical_moderate"]:
+                    emit(f"💡 左手{cn}有点偏竖直——指根弯得偏多，手指站得太直，试着让指根自然一些")
                 elif mcp > 165:
-                    issues.append(f"💡 左手{cn}指根太直了——放松指根关节，让它微微弯曲")
+                    emit(f"💡 左手{cn}指根太直了——放松指根关节，让它微微弯曲")
 
             logger.info(f"[diag] {cn}: pip={pip:.0f} mcp={mcp:.0f} fs={fs:.1f}"
                         + (f" kb_pip_bend={kb_pip_bend:.0f} kb_mcp_bend={kb_mcp_bend:.0f}" if kb_pip_bend is not None else ""))
@@ -1285,6 +1499,73 @@ class VideoProcessor:
 
         issues.sort(key=self._issue_severity, reverse=True)
         return issues[:6]
+
+    def _median_angles(self, samples: List[Dict]) -> Dict:
+        """对和弦段内逐帧角度取中位数，得到一个稳定的 angles dict 供稳定判决。
+
+        单帧 MediaPipe 3D 角度摆动可达 ±60°，用中位数消除噪声后，
+        阈值检测才有意义（平均手型正确 → 不误报，平均确实偏差 → 报）。
+        """
+        all_keys = set()
+        for s in samples:
+            all_keys.update(s["angles"].keys())
+        med = {}
+        for key in all_keys:
+            vals = [s["angles"][key] for s in samples if key in s["angles"]]
+            if not vals:
+                continue
+            if key == "wrist":
+                ang = float(np.median([v["angle_deg"] for v in vals]))
+                med[key] = {"angle_deg": round(ang, 1), "is_bent": ang < 100 or ang > 170}
+            else:
+                med[key] = {
+                    "mcp_deg": round(float(np.median([v["mcp_deg"] for v in vals])), 1),
+                    "pip_deg": round(float(np.median([v["pip_deg"] for v in vals])), 1),
+                    "z_depth": round(float(np.median([v["z_depth"] for v in vals])), 4),
+                    "foreshorten": round(float(np.median([v["foreshorten"] for v in vals])), 2),
+                    "is_standing": sum(1 for v in vals if v.get("is_standing")) > len(vals) / 2,
+                    "is_flat": sum(1 for v in vals if v.get("is_flat")) > len(vals) / 2,
+                }
+        return med
+
+    def _collect_severe_fingers(self, occ, chord_ctx, cid, severe_fingers):
+        """对一个和弦的一次连续出现取中位数并判 ⚠️ 手指，累积到 severe_fingers[cid]。
+
+        只收集 ⚠️(严重)手指，💡(轻微)仍交由合并中位数统一过滤，避免引入轻微假阳性。
+        """
+        if len(occ) < 3:
+            return
+        med = self._median_angles(occ)
+        if not med:
+            return
+        for iss in self._detect_left_hand_issues(med, chord_ctx):
+            if isinstance(iss, str) and iss.startswith("⚠️"):
+                severe_fingers.setdefault(cid, set()).update(self._issue_fingers([iss]))
+
+    @staticmethod
+    def _issue_fingers(texts) -> set:
+        """从问题文本中提取涉及的手指/部位中文名集合。"""
+        names = {"拇指", "食指", "中指", "无名指", "小指", "手腕"}
+        found = set()
+        for t in texts:
+            if not isinstance(t, str):
+                continue
+            for n in names:
+                if n in t:
+                    found.add(n)
+        return found
+
+    def _chord_id_at(self, ts: float):
+        """返回 ts 时刻命中的和弦 id（与逐帧和弦上下文查找逻辑一致）。"""
+        dc = getattr(self, '_detected_chords', None)
+        if not dc:
+            return None
+        for chord in dc:
+            ct = chord.get("time", 0)
+            c_end = chord.get("end_time", ct + 2.0)
+            if ct - 0.3 <= ts <= c_end + 0.3:
+                return chord.get("chord_id", "") or None
+        return None
 
     def _detect_right_hand_issues(self, angles: Dict) -> List[str]:
         """右手（弹奏手）检测: 手腕灵活性、手指自然度、拇指位置、手部位置。
@@ -1322,8 +1603,10 @@ class VideoProcessor:
 
             # 拇指检测：握拨片/自然搭弦，重点是不过度紧张
             if f == "thumb":
+                # （2026-08-25 V4：⚠️ 降级 💡——正常握拨片拇指 MCP 常低于 40，
+                #  静态阈值帧级判「捏太紧」全是误报）
                 if mcp < 40:
-                    issues.append("⚠️ 右手拇指捏得太紧了——握拨片或拨弦时拇指自然放松，像拿着一张纸的力度就好")
+                    issues.append("💡 右手拇指捏得太紧了——握拨片或拨弦时拇指自然放松，像拿着一张纸的力度就好")
                 elif mcp < 60:
                     issues.append("💡 右手拇指有点紧——试试放松一点，拇指微微弯曲就好，不用使劲捏")
                 elif mcp > 170:
@@ -1333,8 +1616,10 @@ class VideoProcessor:
             # index / middle / ring / pinky
             # 右手手指主要用于拨弦，需要自然微弯
             # 蜷太紧 → 紧张，影响灵活度
+            # （2026-08-25 V4：⚠️ 降级 💡——10 个正常演奏视频实测右手 PIP 中位 48-52、
+            #  p10 为 33-37，扫弦时手指自然张合，pip<50 的帧级严重判定在正常中位数上触发）
             if pip < 50:
-                issues.append(f"⚠️ 右手{cn}蜷得太紧了——拨弦手指放松一点，自然弯曲、像在键盘上打字那样")
+                issues.append(f"💡 右手{cn}蜷得太紧了——拨弦手指放松一点，自然弯曲、像在键盘上打字那样")
             elif pip < 75:
                 issues.append(f"💡 右手{cn}有点紧张——如果是AM指弹技巧就正常；如果不是，手指可以再放松一点")
 
@@ -1460,6 +1745,115 @@ class VideoProcessor:
         cos = np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0)
         return float(np.degrees(np.arccos(cos)))
 
+    def _sample_wrist_track(self, video_path: str, duration: float, fps: float) -> List[Dict]:
+        """右手腕高帧率采样通道（P0 修复：3fps 关键帧 → ~15fps）。
+
+        单次扫弦动作仅 100-250ms，主检测循环 3fps 的关键帧采样下每次扫弦
+        最多采到 1 帧，_detect_individual_strums 的 Y 速度过零检测物理上
+        无法工作。本通道顺序解码（grab 跳帧）+ 降采样小图（宽 320px），
+        按 ~15fps 只跟踪拨弦手，为逐次扫弦检测提供时间分辨率。
+
+        720p 代理视频上单帧推理 ~10-25ms，60s 视频约 +20-30s；帧数上限
+        和墙钟预算双重保护，超预算用已采到的部分。
+
+        必须在主检测循环之后调用：镜像判定（self._mirror_detected）依赖
+        主循环的左右手识别结果。
+
+        Returns:
+            [{"time": t, "hand": "Right", "landmarks": [(x,y,z)×21]}, ...]
+            与 all_hand_landmarks 同格式（仅含拨弦手帧），可直接喂给
+            _compute_right_hand_strumming；失败/无手返回 []。
+        """
+        if not self.model_loaded or duration <= 0 or fps <= 0:
+            return []
+
+        step = max(1, int(round(fps / WRIST_TRACK_FPS)))
+        detector = self._create_detector()
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return []
+
+        t_start = time.time()
+        frames_out = []
+        frame_idx = 0
+        processed = 0
+        last_ms = -1
+        no_hand_streak = 0  # 连续未检出右手的采样帧数
+        try:
+            while processed < WRIST_TRACK_MAX_FRAMES:
+                ret = cap.grab()  # 跳帧只 grab 不 retrieve，解码开销最小
+                if not ret:
+                    break
+                if frame_idx % step == 0:
+                    ret, frame = cap.retrieve()
+                    if ret and frame is not None and frame.size > 0:
+                        ts = frame_idx / fps
+                        processed += 1
+
+                        if time.time() - t_start > WRIST_TRACK_TIME_BUDGET:
+                            logger.warning(f"[wrist-track] 超时间预算 {WRIST_TRACK_TIME_BUDGET}s，"
+                                           f"已采 {len(frames_out)} 帧")
+                            frame_idx += 1
+                            break
+
+                        # 降采样：MediaPipe 推理成本与像素数成正比
+                        h, w = frame.shape[:2]
+                        if w > WRIST_TRACK_WIDTH:
+                            scale = WRIST_TRACK_WIDTH / w
+                            frame = cv2.resize(frame, (WRIST_TRACK_WIDTH, max(1, int(h * scale))),
+                                               interpolation=cv2.INTER_AREA)
+
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        mp_image = self._mp_image(image_format=self._mp_image_format.SRGB, data=frame_rgb)
+                        ts_ms = int(ts * 1000)
+                        if ts_ms <= last_ms:  # VIDEO 模式要求时间戳严格递增
+                            frame_idx += 1
+                            continue
+                        last_ms = ts_ms
+                        try:
+                            results = detector.detect_for_video(mp_image, ts_ms)
+                        except Exception:
+                            continue
+
+                        got_right_hand = False
+                        if results.hand_landmarks:
+                            # 只保留拨弦手（Right）；镜像翻转规则与主循环一致
+                            for idx, hlm in enumerate(results.hand_landmarks):
+                                handedness = "unknown"
+                                if results.handedness and idx < len(results.handedness):
+                                    handedness = results.handedness[idx][0].category_name
+                                if self._mirror_detected and handedness != "unknown":
+                                    handedness = "Right" if handedness == "Left" else "Left"
+                                if handedness == "Right":
+                                    frames_out.append({
+                                        "time": round(ts, 3),
+                                        "hand": "Right",
+                                        "landmarks": [(lm.x, lm.y, lm.z) for lm in hlm],
+                                    })
+                                    got_right_hand = True
+
+                        # 连续 ~3s（45 帧 @15fps）无右手 → 角度遮挡/不在画面，
+                        # 后续出现概率极低，提前退出省推理（侧拍单音视频实测
+                        # 空跑全程 22s）。真实弹奏中右手持续在场，不会误退。
+                        if got_right_hand:
+                            no_hand_streak = 0
+                        else:
+                            no_hand_streak += 1
+                            if no_hand_streak >= 45:
+                                logger.info(f"[wrist-track] 连续 {no_hand_streak} 帧无右手，"
+                                            f"提前退出（已采 {len(frames_out)} 帧）")
+                                break
+                frame_idx += 1
+        except Exception as e:
+            logger.warning(f"[wrist-track] 采样失败: {e}")
+        finally:
+            cap.release()
+
+        eff_fps = len(frames_out) / max(duration, 0.001)
+        logger.info(f"[wrist-track] {len(frames_out)} 帧右手轨迹 (~{eff_fps:.1f}fps, "
+                    f"step={step}, {time.time() - t_start:.1f}s)")
+        return frames_out
+
     def _compute_right_hand_strumming(self, all_hand_landmarks: List[Dict]) -> Dict:
         """右手弹奏分析：拨弦角度 + 手腕运动速度 + 逐次扫弦方向/力度。
 
@@ -1519,29 +1913,65 @@ class VideoProcessor:
         avg_grip = float(np.mean(grip_angles)) if grip_angles else 0
         avg_vel = float(np.mean(velocities)) if velocities else 0
 
-        # 扫弦运动评分：有规律的速度波动（CV适中=规律，太低=静止，太高=乱动）
-        strum_score = 0.0
-        if len(velocities) >= 4:
-            vel_arr = np.array(velocities)
-            vel_cv = float(np.std(vel_arr) / max(np.mean(vel_arr), 0.001))
-            if 0.2 < vel_cv < 1.2 and avg_vel > 0.02:
-                strum_score = min(1.0, vel_cv * 0.8)
-            elif avg_vel > 0.05:
-                strum_score = 0.5
-
         # ── 逐次扫弦检测：AirStrum 风格右手腕 y-velocity 方向判断 ──
         strum_events = self._detect_individual_strums(wrist_positions)
+
+        # 扫弦运动评分：以过滤后的真实事件为证据。
+        # 旧版用速度 CV，15fps 下被 landmark 抖动污染（分解视频实测 0.92 假高分）。
+        # 实测发现速度峰值无法区分扫弦与分解（分解拨弦调手位 peak 也可达 0.43，
+        # 与扫弦的 0.33-0.70 重叠）；真正的区分特征是方向交替模式：
+        #   扫弦  = DUDUDU... 规律交替（物理本质：往返摆动）
+        #   分解  = UDUUDUUDDUUDDDDUDDDUDD 方向随机（调手位/拨不同弦）
+        # 故以"最长交替段长度"(max_run) 门控，速度强度仅作辅助权重。
+        strum_score = 0.0
+        max_run = 0
+        if len(strum_events) >= 3:
+            mean_peak = float(np.mean([e["peak_velocity"] for e in strum_events]))
+            dirs = [1 if e["direction"] == "down" else -1 for e in strum_events]
+            max_run = self._longest_alternating_run(dirs)
+            peak_term = min(1.0, mean_peak / 0.35)
+            if max_run >= 5:
+                # 规律交替模式（≥DUDUD）→ 扫弦强证据
+                strum_score = min(1.0, 0.55 + 0.20 * min(1.0, (max_run - 4) / 8) + 0.25 * peak_term)
+            elif max_run == 4:
+                # 短交替段（DUDU）→ 弱证据（慢速/稀疏扫弦）
+                strum_score = 0.35 + 0.25 * peak_term
+            else:
+                # 方向随机（最长交替 ≤2）→ 手位调整/分解拨弦，非扫弦
+                strum_score = min(0.30, 0.15 + 0.15 * peak_term)
+        elif len(strum_events) >= 1:
+            strum_score = 0.25  # 孤立动作（如开头调手位），弱信号，不触发下游确认
 
         return {
             "grip_angle": round(avg_grip, 1),
             "wrist_velocity_avg": round(avg_vel, 4),
             "strumming_motion_score": round(strum_score, 2),
+            "max_alternating_run": max_run,
             "frames_used": len(right_frames),
             "strum_events": strum_events,
             "strum_count": len(strum_events),
             "down_count": sum(1 for s in strum_events if s["direction"] == "down"),
             "up_count": sum(1 for s in strum_events if s["direction"] == "up"),
         }
+
+    @staticmethod
+    def _longest_alternating_run(dirs: List[int]) -> int:
+        """最长交替方向段长度：DUDU... 中相邻方向都不同的连续段。
+
+        扫弦的方向序列呈长交替段（≥5），分解/手位调整的方向随机
+        （实测最长 3）。事件序列需已按时间排序。
+        """
+        if len(dirs) < 2:
+            return len(dirs)
+        best = cur = 1
+        for i in range(1, len(dirs)):
+            if dirs[i] != dirs[i - 1]:
+                cur += 1
+                if cur > best:
+                    best = cur
+            else:
+                cur = 1
+        return best
 
     def _detect_individual_strums(self, wrist_positions: List[tuple]) -> List[Dict]:
         """从手腕 y 坐标时间序列中检测逐次扫弦事件。
@@ -1653,6 +2083,16 @@ class VideoProcessor:
             if duration < 0.04:
                 continue
 
+            # 过滤：峰值速度不足 → MediaPipe landmark 抖动假事件
+            # 实测（15fps 腕通道）：抖动段 peak 0.05-0.09，真实扫弦 peak ≥0.18
+            if peak_velocity < 0.12:
+                continue
+
+            # 过滤：长而慢的漂移（如调整手位）≠ 扫弦
+            # 实测：假事件 dur>0.8s 且 mean_vel<0.10；真扫弦段要么短，要么持续快
+            if duration > 0.8 and mean_velocity < 0.10:
+                continue
+
             mid_time = float(seg_t[0] + duration / 2)
 
             strum_events.append({
@@ -1741,7 +2181,6 @@ class VideoProcessor:
         if scale > 0.01:
             arr = arr / scale
         return arr.flatten().tolist()
-
 
 
 

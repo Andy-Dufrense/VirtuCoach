@@ -44,7 +44,7 @@ start.bat
 手动启动：
 
 ```bat
-F:\Python310\python.exe run.py
+..\Python310\python.exe run.py
 ```
 
 ### 环境变量（.env，已被 .gitignore 排除）

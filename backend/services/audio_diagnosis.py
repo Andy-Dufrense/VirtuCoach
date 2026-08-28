@@ -19,6 +19,20 @@ class Finding:
     evidence: str          # 证据描述，如 "连续8个小节内节拍偏差超过40ms"
     metrics: Dict = field(default_factory=dict)  # 相关原始数据
     suggestion: str = ""   # 简短建议
+    low_confidence: bool = False  # 录音质量门控（Item 4）：red 录音时节奏类诊断置 True
+    confidence: float = 1.0  # 0~1，由诊断函数按信号边际计算，供报告保守措辞（Batch-1 Item 1）
+
+
+def _confidence_from_margin(value: float, boundary: float, scale: float) -> float:
+    """信号越过阈值的归一化边际 → 置信度 (0.5~1.0)。
+
+    value 恰在 boundary 上 → 0.5（最不确定，zone 归属模糊）；
+    远离 boundary 一个 scale → 1.0（确定）。scale 为该特征「多远算确定」的尺度。
+    """
+    if scale <= 0:
+        return 1.0
+    margin = abs(value - boundary) / scale
+    return round(min(1.0, 0.5 + margin), 2)
 
 
 @dataclass
@@ -72,6 +86,13 @@ def diagnose(audio_result: Dict[str, Any]) -> AudioDiagnosis:
     technique_segs = audio_result.get("technique_segments", [])
     findings.extend(_diagnose_strumming(af, technique_segs))
 
+    # ── 8. 录音质量 ──
+    findings.extend(_diagnose_recording(audio_result))
+
+    # ── 9. 节奏交叉验证（Item 3）：note-IOI tempo vs librosa 节拍跟踪 ──
+    beat_info = audio_result.get("beat_info", {})
+    findings = _cross_validate_rhythm(findings, af, beat_info)
+
     # ── 统计 ──
     diag.findings = findings
     diag.red_count = sum(1 for f in findings if f.zone == "red")
@@ -98,27 +119,35 @@ def _diagnose_rhythm(af: Dict, errors: List[Dict]) -> List[Finding]:
     if cv <= 0:
         return findings
 
-    if cv < 0.20:
+    # 阈值按吉他实际放宽（2026-08-18）：扫弦(短IOI)+旋律(长IOI)混合使 CV 天然偏高，
+    # 与 feature_summary、CV-rhythm锚定(0.60) 保持一致的"偏不稳/不稳定"分界
+    if cv < 0.25:
         findings.append(Finding(
             category="rhythm", zone="green", label="节拍稳定",
             severity="无",
             evidence=f"节拍稳定性良好，各音符时值均匀",
             metrics={"ioi_cv": ioi_cv, "ioi_cv_core": ioi_cv_core},
+            confidence=_confidence_from_margin(cv, 0.25, 0.15),
         ))
-    elif cv < 0.35:
+    elif cv < 0.40:
         findings.append(Finding(
             category="rhythm", zone="green", label="节拍大体稳定",
             severity="无",
             evidence=f"节拍稳定性良好，扫弦和旋律的交替在正常范围内",
             metrics={"ioi_cv": ioi_cv, "ioi_cv_core": ioi_cv_core},
+            confidence=_confidence_from_margin(cv, 0.25, 0.15),
         ))
-    elif cv < 0.50:
+    elif cv < 0.60:
+        # 贴下边界(0.40)或上边界(0.60)都说明 zone 归属模糊，取两者最小边际
+        conf = min(_confidence_from_margin(cv, 0.40, 0.15),
+                   _confidence_from_margin(cv, 0.60, 0.15))
         findings.append(Finding(
             category="rhythm", zone="yellow", label="节拍欠稳",
             severity="轻微",
             evidence=f"节拍稳定性一般，部分音符时值有偏差",
             metrics={"ioi_cv": ioi_cv, "ioi_cv_core": ioi_cv_core},
             suggestion="用节拍器慢练，确保每个音符的时值均匀",
+            confidence=conf,
         ))
     else:
         findings.append(Finding(
@@ -127,9 +156,10 @@ def _diagnose_rhythm(af: Dict, errors: List[Dict]) -> List[Finding]:
             evidence=f"节拍稳定性偏差明显，多处时值不均匀",
             metrics={"ioi_cv": ioi_cv, "ioi_cv_core": ioi_cv_core},
             suggestion="先用节拍器在50%原速下练习，重点感受每个拍的落点",
+            confidence=_confidence_from_margin(cv, 0.60, 0.30),
         ))
 
-    # 加速区域
+    # 加速区域（ratio < 0.60 即触发，越远离阈值越确定）
     if rush_regions:
         regions_desc = "、".join(
             f"{r['start']:.1f}s-{r['end']:.1f}s" for r in rush_regions[:3]
@@ -140,9 +170,10 @@ def _diagnose_rhythm(af: Dict, errors: List[Dict]) -> List[Finding]:
             evidence=f"在 {regions_desc} 处存在加速（速度突增 {1-rush_regions[0]['ratio']:.0%}）",
             metrics={"rush_regions": rush_regions},
             suggestion="加速段落单独练习，刻意控制速度不要变快",
+            confidence=_confidence_from_margin(rush_regions[0]["ratio"], 0.60, 0.20),
         ))
 
-    # 拖拍区域
+    # 拖拍区域（ratio > 1.0，越远离越确定）
     if drag_regions:
         regions_desc = "、".join(
             f"{r['start']:.1f}s-{r['end']:.1f}s" for r in drag_regions[:3]
@@ -153,6 +184,7 @@ def _diagnose_rhythm(af: Dict, errors: List[Dict]) -> List[Finding]:
             evidence=f"在 {regions_desc} 处存在拖拍（速度下降 {drag_regions[0]['ratio']-1:.0%}）",
             metrics={"drag_regions": drag_regions},
             suggestion="拖拍段落通常是技术难点，单独慢练确保手指能跟上",
+            confidence=_confidence_from_margin(drag_regions[0]["ratio"], 1.0, 0.20),
         ))
 
     return findings
@@ -185,7 +217,9 @@ def _diagnose_per_note_rhythm(notes: List[Dict], tempo_bpm: float) -> List[Findi
         pos = n.get("guitar_position", "") or ""
         deviations.append((t, deviation, pos))
 
-    threshold = beat_interval * 0.15
+    # 人耳对节奏偏差的感知下限约 100ms：快曲 156BPM 时 beat_interval*0.15≈58ms，
+    # 会把 56-88ms 这种根本听不出的微小波动误报成「偏快/偏慢」。加 100ms 绝对下限。
+    threshold = max(beat_interval * 0.15, 0.10)
     bad_notes = [(t, dev, pos) for t, dev, pos in deviations if abs(dev) > threshold]
     if not bad_notes:
         return findings
@@ -222,6 +256,8 @@ def _diagnose_per_note_rhythm(notes: List[Dict], tempo_bpm: float) -> List[Findi
             evidence="；".join(parts),
             metrics={"bad_note_count": bad_count, "rush_count": len(rush_notes), "drag_count": len(drag_notes)},
             suggestion="以上位置单独放慢练习，用节拍器确保每个音符都卡在拍点上",
+            # 个别清晰离群音符最可信；偏差遍布全曲更可能是 tempo 网格整体偏移（低置信）
+            confidence=0.9 if bad_count <= 3 else 0.7 if bad_count <= 10 else 0.5,
         ))
 
     return findings
@@ -430,14 +466,19 @@ def _diagnose_pitch_errors(errors: List[Dict], stats: Dict) -> List[Finding]:
                 evidence=f"{len(pitch_errs)}个音准错误（严重{sev_count}处、中等{med_count}处），错误率{err_rate:.0%}",
                 metrics={"error_count": len(pitch_errs), "severe": sev_count, "medium": med_count, "error_rate": round(err_rate, 2)},
                 suggestion="逐小节检查：找到具体错音位置，反复练习直到正确",
+                confidence=_confidence_from_margin(err_rate, 0.20, 0.20),
             ))
         elif err_rate > 0.1 or sev_count >= 2:
+            # 贴下边界(0.1)或上边界(0.2)都说明 zone 归属模糊
+            conf = min(_confidence_from_margin(err_rate, 0.10, 0.10),
+                       _confidence_from_margin(err_rate, 0.20, 0.10))
             findings.append(Finding(
                 category="pitch", zone="yellow", label="存在音准错误",
                 severity="中等" if sev_count >= 2 else "轻微",
                 evidence=f"{len(pitch_errs)}个音准错误（严重{sev_count}处、中等{med_count}处）",
                 metrics={"error_count": len(pitch_errs), "severe": sev_count, "medium": med_count, "error_rate": round(err_rate, 2)},
                 suggestion="重点关注错误音符，放慢速度确保每个音都按对",
+                confidence=conf,
             ))
 
     if rhythm_errs:
@@ -482,13 +523,17 @@ def _diagnose_strumming(af: Dict, technique_segs: List[Dict]) -> List[Finding]:
             severity="无",
             evidence=f"扫弦中杂音水平正常，扫弦清晰度好",
             metrics={"inharmonicity_ratio": inharm},
+            confidence=_confidence_from_margin(inharm, STRUM_INHARM_THRESHOLD, 0.15),
         ))
     elif inharm >= STRUM_INHARM_THRESHOLD and inharm < 0.50:
+        conf = min(_confidence_from_margin(inharm, STRUM_INHARM_THRESHOLD, 0.15),
+                   _confidence_from_margin(inharm, 0.50, 0.15))
         findings.append(Finding(
             category="strumming", zone="yellow", label="扫弦有杂音",
             severity="轻微",
             evidence="扫弦时杂音偏多，可能是触弦太深或指甲角度不对",
             suggestion="扫弦只需指甲轻轻划过弦面（约一半指甲），不要'砍'进琴弦。上扫时大拇指稍微侧一点减小刮擦声",
+            confidence=conf,
         ))
     elif inharm >= 0.50:
         findings.append(Finding(
@@ -496,6 +541,7 @@ def _diagnose_strumming(af: Dict, technique_segs: List[Dict]) -> List[Finding]:
             severity="中等",
             evidence="扫弦杂音占比过高，音色不够干净",
             suggestion="放慢速度，先确保每次扫弦指甲接触深度一致。可以用闷音扫弦练习先找到'擦过'的感觉",
+            confidence=_confidence_from_margin(inharm, 0.50, 0.20),
         ))
 
     # 扫弦节奏评估
@@ -506,13 +552,17 @@ def _diagnose_strumming(af: Dict, technique_segs: List[Dict]) -> List[Finding]:
                 severity="无",
                 evidence="扫弦节奏稳定，上下摆动均匀",
                 metrics={"ioi_cv": ioi_cv},
+                confidence=_confidence_from_margin(ioi_cv, 0.10, 0.08),
             ))
         elif ioi_cv < 0.18:
+            conf = min(_confidence_from_margin(ioi_cv, 0.10, 0.08),
+                       _confidence_from_margin(ioi_cv, 0.18, 0.08))
             findings.append(Finding(
                 category="strumming", zone="yellow", label="扫弦节奏欠稳",
                 severity="轻微",
                 evidence="扫弦节奏偶尔不均匀，可能在换和弦或换扫弦型时手停了一下",
                 suggestion="右手像节拍器一样持续摆动，即使不触弦手也在动。用节拍器辅助，先从单一扫弦型开始",
+                confidence=conf,
             ))
         else:
             findings.append(Finding(
@@ -520,6 +570,7 @@ def _diagnose_strumming(af: Dict, technique_segs: List[Dict]) -> List[Finding]:
                 severity="中等",
                 evidence="扫弦节奏忽快忽慢，节拍变异大",
                 suggestion="降低速度（50-60BPM），只练右手持续上下摆动，左手不按弦",
+                confidence=_confidence_from_margin(ioi_cv, 0.18, 0.12),
             ))
 
     # 高频刮擦声（扫弦过深时指甲侧面刮弦产生）
@@ -529,8 +580,96 @@ def _diagnose_strumming(af: Dict, technique_segs: List[Dict]) -> List[Finding]:
             severity="轻微",
             evidence=f"高频噪声偏高，可能是扫弦角度偏平（指甲侧面刮弦）",
             suggestion="调整扫弦角度：下扫时食指甲稍微倾斜（约45°），不要让指甲侧面平行于琴弦",
+            confidence=_confidence_from_margin(hf_noise, 0.10, 0.05),
         ))
 
+    return findings
+
+
+def _diagnose_recording(audio_result: Dict) -> List[Finding]:
+    """诊断录音环境质量。"""
+    rq = audio_result.get("recording_quality", {})
+    if not rq:
+        return []
+
+    findings = []
+    tier = rq.get("tier", "green")
+    chroma_clarity = rq.get("chroma_clarity", "good")
+    tuning_ok = rq.get("tuning_ok", True)
+    warnings = rq.get("warnings", [])
+
+    if tier == "red":
+        findings.append(Finding(
+            category="recording", zone="red", label="录音质量较差",
+            severity="明显",
+            evidence="；".join(warnings) if warnings else "chroma特征噪声过大，和弦识别不可靠",
+            metrics={"chroma_median_active": rq.get("chroma_median_active", 0),
+                     "chroma_clarity": chroma_clarity, "tuning_ok": tuning_ok},
+            suggestion="请在安静环境重新录制，手机距离吉他30-50cm，确认吉他已标准调弦",
+        ))
+    elif tier == "yellow":
+        findings.append(Finding(
+            category="recording", zone="yellow", label="录音质量一般",
+            severity="轻微",
+            evidence="；".join(warnings) if warnings else "音频信号有一定噪声",
+            metrics={"chroma_median_active": rq.get("chroma_median_active", 0),
+                     "chroma_clarity": chroma_clarity, "tuning_ok": tuning_ok},
+            suggestion="尽量在安静环境录制，减少背景噪音",
+        ))
+
+    return findings
+
+
+def _tempo_octave_distance(a: float, b: float) -> float:
+    """两 tempo 的八度无关相对差异 (0=八度等价，~0.415=半八度最远，1.0=无效)。
+
+    af.tempo_bpm=60/mean_ioi 测的是音符细分（八分音符→2×拍），librosa 测的是拍，
+    两者天然差 2 的幂。用 log2 比值的「距最近整数的分数部分」衡量真实分歧，
+    避免把 2 倍差误判成节奏分歧（也避免固定八度带在 60/120 边界的跳变）。
+    """
+    import math
+    if a <= 0 or b <= 0:
+        return 1.0
+    frac = math.log2(a / b)
+    frac -= round(frac)  # 距最近整数(即最近八度)的距离，∈ (-0.5, 0.5]
+    return abs(frac)
+
+
+def _cross_validate_rhythm(findings: List[Finding], af: Dict, beat_info: Dict) -> List[Finding]:
+    """节奏交叉验证（Batch-1 Item 3）：两个独立 tempo 信号互证。
+
+    - af.tempo_bpm：note onset 的 IOI 反推（60/mean_ioi）
+    - beat_info.tempo_bpm：librosa onset strength 节拍跟踪
+
+    用八度无关距离比较（消除「拍 vs 八分音符细分」2 倍差）。
+    一致(<~11%) → 节奏类 finding 置信 +0.05；分歧(>~25%) → -0.15；缺一个信号 → -0.10。
+    两者都缺则不动。非节奏 finding 不受影响。
+    """
+    ioi_tempo = (af or {}).get("tempo_bpm", 0) or 0
+    beat_tempo = ((beat_info or {}).get("tempo_bpm", 0)) or 0
+
+    if ioi_tempo <= 0 and beat_tempo <= 0:
+        return findings
+
+    if ioi_tempo <= 0 or beat_tempo <= 0:
+        adj = -0.10
+        reason = "单一节拍信号"
+    else:
+        dist = _tempo_octave_distance(ioi_tempo, beat_tempo)
+        if dist < 0.1375:      # 2^0.1375 ≈ 1.10，即 <10% 线性差
+            adj = 0.05
+            reason = "双节拍信号一致"
+        elif dist < 0.3219:    # 2^0.3219 ≈ 1.25
+            adj = 0.0
+            reason = "双节拍信号基本一致"
+        else:
+            adj = -0.15
+            reason = "双节拍信号分歧"
+
+    for f in findings:
+        if f.category == "rhythm":
+            f.confidence = max(0.0, min(1.0, round(f.confidence + adj, 2)))
+            f.metrics["cv_reason"] = reason
     return findings
 
 
@@ -570,6 +709,10 @@ def format_for_ai(diag: AudioDiagnosis) -> str:
         for f in reds:
             sections.append(f"**{f.label}**（严重程度：{f.severity}）")
             sections.append(f"- 证据：{f.evidence}")
+            if f.low_confidence:
+                sections.append("- ⚠️ 低置信：本次录音质量差，此判断仅供参考，请勿武断下结论")
+            elif f.confidence < 0.6:
+                sections.append("- ⚠️ 信号不确定：该判断接近判定阈值，仅供参考，请结合上下文判断")
             if f.suggestion:
                 sections.append(f"- 建议方向：{f.suggestion}")
             sections.append("")
@@ -581,6 +724,10 @@ def format_for_ai(diag: AudioDiagnosis) -> str:
         for f in yellows:
             sections.append(f"**{f.label}**（严重程度：{f.severity}）")
             sections.append(f"- 证据：{f.evidence}")
+            if f.low_confidence:
+                sections.append("- ⚠️ 低置信：本次录音质量差，此判断仅供参考，请勿武断下结论")
+            elif f.confidence < 0.6:
+                sections.append("- ⚠️ 信号不确定：该判断接近判定阈值，仅供参考，请结合上下文判断")
             if f.suggestion:
                 sections.append(f"- 建议方向：{f.suggestion}")
             sections.append("")

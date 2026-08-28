@@ -24,6 +24,7 @@ function getAuthHeaders() {
 
 let currentTaskId = null;
 let pollTimer = null;
+let videoProgressTimer = null;
 
 // ========== DOM 引用 ==========
 const uploadSection = document.getElementById("uploadSection");
@@ -35,7 +36,6 @@ const videoInput = document.getElementById("videoInput");
 const selectBtn = document.getElementById("selectBtn");
 const instrumentSelect = document.getElementById("instrumentSelect");
 const levelSelect = document.getElementById("levelSelect");
-const modelStatus = document.getElementById("modelStatus");
 const progressBar = document.getElementById("progressBar");
 const progressMessage = document.getElementById("progressMessage");
 const progressTitle = document.getElementById("progressTitle");
@@ -151,7 +151,6 @@ let videoRecordState = {
 
 // ========== 初始化 ==========
 document.addEventListener("DOMContentLoaded", () => {
-    checkModelStatus();
     setupEventListeners();
     // 支持 dashboard 跳转带 ?mode=hand 直接进入手型/技巧检查
     try {
@@ -251,35 +250,6 @@ function setupEventListeners() {
     } catch(e) { console.error("setup: imageUploadBox", e); }
 }
 
-// ========== 模型状态检查 ==========
-async function checkModelStatus() {
-    try {
-        const resp = await fetch(`${API_BASE}/api/models/status`, { headers: getAuthHeaders() });
-        const data = await resp.json();
-        const bpOk = data.basic_pitch;
-        const mpOk = data.mediapipe_hands;
-        const visOk = data.vision_ai;
-        const allOk = bpOk && mpOk;
-        if (allOk) {
-            var visName = "";
-            if (visOk) {
-                visName = data.vision_provider === "qwen" ? " + 通义千问 VL" : " + Claude Vision";
-            }
-            modelStatus.textContent = "✅ 所有模型就绪" + visName;
-            modelStatus.className = "status-badge ready";
-        } else {
-            const missing = [];
-            if (!bpOk) missing.push("basic-pitch");
-            if (!mpOk) missing.push("MediaPipe");
-            modelStatus.textContent = `⚠️ 未加载: ${missing.join(", ")}`;
-            modelStatus.className = "status-badge error";
-        }
-    } catch (e) {
-        modelStatus.textContent = "⚠️ 无法连接后端服务";
-        modelStatus.className = "status-badge error";
-    }
-}
-
 // ========== 文件选择 ==========
 function handleFileSelect() {
     const file = videoInput.files[0];
@@ -349,39 +319,31 @@ async function uploadVideo(file) {
 // ========== 轮询 ==========
 function startPolling(taskId) {
     if (pollTimer) clearInterval(pollTimer);
+    startVideoSmoothProgress();
     pollTimer = setInterval(async () => {
         try {
             const resp = await fetch(`${API_BASE}/api/task/${taskId}`, { headers: getAuthHeaders() });
             const data = await resp.json();
 
-            const p = data.progress || 0;
-            progressBar.style.width = `${p}%`;
-
-            // 动态进度消息
-            if (p < 5) {
-                progressMessage.textContent = "正在提取音频并分析音符...";
-            } else if (p < 35) {
-                progressMessage.textContent = "音频分析中，检测音符和节奏...";
-            } else if (p < 60) {
-                progressMessage.textContent = "视频关键帧提取 + 手型检测中...";
-            } else if (p < 90) {
-                progressMessage.textContent = "AI 综合评估中，生成老师报告...";
-            } else {
-                progressMessage.textContent = "报告整理中，即将完成...";
+            // 排队状态：显示队列提示，不推进进度条
+            if (data.status === "queued") {
+                progressBar.style.width = "0%";
+                progressMessage.textContent = data.message || "排队中...";
+                updateStep("step2", "active");
+                return;
             }
 
-            // 动态步骤
-            if (p >= 100) {
-                updateStep("step2", "done");
-                updateStep("step3", "done");
-                updateStep("step4", "done");
-                progressBar.style.width = "100%";
-                progressMessage.textContent = "分析完成！";
-            } else if (p >= 60) {
+            // 用后端真实阶段文案（比本地估算更准确）
+            if (data.message) {
+                progressMessage.textContent = data.message;
+            }
+
+            // 用真实进度推进步骤图标
+            var p = data.progress || 0;
+            if (p >= 60) {
                 updateStep("step2", "done");
                 updateStep("step3", "done");
                 updateStep("step4", "active");
-                progressMessage.textContent = "AI 综合评估中，生成老师报告...";
             } else if (p >= 35) {
                 updateStep("step2", "done");
                 updateStep("step3", "active");
@@ -400,11 +362,18 @@ function startPolling(taskId) {
                 }
             }
             if (data.status === "completed") {
+                stopVideoSmoothProgress();
                 clearInterval(pollTimer);
                 pollTimer = null;
+                progressBar.style.width = "100%";
+                progressMessage.textContent = "分析完成！";
+                updateStep("step2", "done");
+                updateStep("step3", "done");
+                updateStep("step4", "done");
                 showResult(data);
             }
             if (data.status === "failed") {
+                stopVideoSmoothProgress();
                 clearInterval(pollTimer);
                 pollTimer = null;
                 showToast(`分析失败: ${data.message}`, "error");
@@ -412,6 +381,27 @@ function startPolling(taskId) {
             }
         } catch (e) {}
     }, POLL_INTERVAL);
+}
+
+// 本地平滑进度：后端 progress 是离散跳变（8→35→40→75→100），
+// 中间阶段可能数十秒不动，用户会误以为卡死。这里用单调递增的指数曲线
+// 让进度条始终向前走，逼近 95% 封顶，等真实结果回来再跳 100%。
+function startVideoSmoothProgress() {
+    stopVideoSmoothProgress();
+    var start = Date.now();
+    videoProgressTimer = setInterval(function () {
+        var elapsed = (Date.now() - start) / 1000;
+        var progress = 5 + 90 * (1 - Math.exp(-elapsed / 30));
+        progress = Math.min(95, Math.max(5, progress));
+        progressBar.style.width = progress + "%";
+    }, 200);
+}
+
+function stopVideoSmoothProgress() {
+    if (videoProgressTimer) {
+        clearInterval(videoProgressTimer);
+        videoProgressTimer = null;
+    }
 }
 
 
@@ -500,7 +490,7 @@ function showResult(data) {
     var audioErrCount = (result.audio_errors || []).length;
     var handIssCount = realIssues ? realIssues.length : 0;
     var summaryText = result.summary || "分析完成，请查看下方详细报告。";
-    document.getElementById("summaryCard").innerHTML = "💡 " + summaryText;
+    document.getElementById("summaryCard").innerHTML = summaryText;
 
     // ===== 检测详情 =====
     var severityMap = {
@@ -520,30 +510,24 @@ function showResult(data) {
     var contentType = result.content_type || "";
     var contentTypeNote = "";
     if (contentType === "melody") {
-        contentTypeNote = '<li style="border-left-color:var(--primary);background:var(--primary-glow);">🎵 检测到<b>单音旋律</b>，已自动跳过和弦识别分析（和弦识别仅适用于同时弹奏多音的场景）</li>';
+        contentTypeNote = '<li style="border-left-color:var(--primary);background:var(--primary-glow);">检测到<b>单音旋律</b>，已自动跳过和弦识别分析（和弦识别仅适用于同时弹奏多音的场景）</li>';
     }
 
     if (audioStatus === "nSound") {
-        audioList.innerHTML = contentTypeNote + '<li>🔇 未检测到有效音频信号，请确认录制的视频包含清晰的乐器声音</li>';
+        audioList.innerHTML = contentTypeNote + '<li>未检测到有效音频信号，请确认录制的视频包含清晰的乐器声音</li>';
     } else if (audioErrors.length > 0) {
         audioList.innerHTML = contentTypeNote + audioErrors.map(function(e) {
             // 优先用后端返回的 severity，其次用类型映射
             var sev = sevLevelMap[e.severity] || severityMap[e.type] || "cosmetic";
-            var icon = e.type === "wrong_note" ? "🎵" :
-                       e.type === "rhythm_fault" ? "⏱" :
-                       e.type === "extra_note" ? "➕" :
-                       e.type === "missed_note" ? "➖" :
-                       e.type === "overlap" ? "🔀" :
-                       e.type === "pause" ? "⏸" : "🔍";
             var detail = e.detail || '';
             // 节奏错误标记偏快/偏慢方向
             if (e.type === 'rhythm_fault' && detail) {
-                if (/偏快|抢拍|往前赶|快了/.test(detail)) detail = '🏃 偏快 — ' + detail;
-                else if (/偏慢|拖拍|慢了/.test(detail)) detail = '🐢 偏慢 — ' + detail;
-                else if (/不均匀|不稳/.test(detail)) detail = '📊 ' + detail;
+                if (/偏快|抢拍|往前赶|快了/.test(detail)) detail = '偏快 — ' + detail;
+                else if (/偏慢|拖拍|慢了/.test(detail)) detail = '偏慢 — ' + detail;
+                else if (/不均匀|不稳/.test(detail)) detail = '节奏不稳 — ' + detail;
             }
             return '<li class="severity-' + sev + '">' +
-                icon + ' <b>[' + (severityCn[sev] || '') + ']</b> ' + detail +
+                '<b>[' + (severityCn[sev] || '') + ']</b> ' + detail +
                 '<span class="err-time seekable" data-seek="' + (parseFloat(e.time) || 0).toFixed(2) + '">(' + formatTime(e.time) + ')</span></li>';
         }).join("");
     } else {
@@ -573,7 +557,7 @@ function showResult(data) {
                 if (merged.indexOf("偏高") >= 0 || merged.indexOf("偏低") >= 0 || merged.indexOf("角度") >= 0) sev = "minor";
                 if (merged.indexOf("紧张") >= 0 || merged.indexOf("略微") >= 0 || merged.indexOf("太高") >= 0) sev = "cosmetic";
                 return '<li class="severity-' + sev + '">' +
-                    '✋ <b>' + (g.who || '未知') + '</b> (' + formatTime(g.time) + ')<br>' +
+                    '<b>' + (g.who || '未知') + '</b> (' + formatTime(g.time) + ')<br>' +
                     merged + '</li>';
             }).join("");
             // 显示正确手型对比
@@ -585,7 +569,7 @@ function showResult(data) {
     } else {
         var hs = result.hand_status || "";
         if (hs === "nHand") {
-            handList.innerHTML = '<li>📷 本次未捕捉到手部画面，下次录制时请确保左右双手都在镜头内清晰可见</li>';
+            handList.innerHTML = '<li>本次未捕捉到手部画面，下次录制时请确保左右双手都在镜头内清晰可见</li>';
         } else if (hs === "ok") {
             handList.innerHTML = '<li style="border-left-color:var(--success)">✅ 手型正常</li>';
         } else {
@@ -848,7 +832,7 @@ function renderHandCompare(realIssues, referenceImages) {
         } else {
             userHtml = '<div class="compare-side">' +
                 '<span class="compare-label">❌ 你的手型 (' + (issueWho || '') + ')</span>' +
-                '<div class="compare-placeholder"><span>🖐️</span><br>未匹配到<br>对应截图</div></div>';
+                '<div class="compare-placeholder"><span></span><br>未匹配到<br>对应截图</div></div>';
         }
 
         cardsHtml += '<div class="hand-compare-card">' +
@@ -877,7 +861,7 @@ function renderChatPanel() {
     var toggle = document.createElement("button");
     toggle.id = "chatSidebarToggle";
     toggle.className = "chat-sidebar-toggle";
-    toggle.innerHTML = 'AI助手<span class="sparkle">✨</span>';
+    toggle.innerHTML = 'AI助手';
     toggle.title = "点击打开 AI 助手";
     document.body.appendChild(toggle);
 
@@ -888,16 +872,16 @@ function renderChatPanel() {
     overlay.innerHTML =
         '<div class="chat-panel">' +
         '<div class="chat-panel-header">' +
-        '<h3>🤖 AI 吉他教练</h3>' +
+        '<h3>AI 吉他教练</h3>' +
         '<button class="chat-panel-close" id="chatPanelClose">✕</button>' +
         '</div>' +
         '<div class="chat-ref-bar" id="chatRefBar" style="display:none;">' +
-        '<span class="chat-ref-label">📎 引用报告</span>' +
+        '<span class="chat-ref-label">引用报告</span>' +
         '<span class="chat-ref-text" id="chatRefText"></span>' +
         '<button class="chat-ref-clear" id="chatRefClear" title="清除引用">✕</button>' +
         '</div>' +
         '<div class="chat-panel-messages" id="chatPanelMessages">' +
-        '<div class="msg-bubble ai">你好！我是你的 AI 吉他教练 🎸<br>对练习报告有任何疑问，或者想了解如何改进，随时问我！<br><br>💡 <b>小技巧：在报告中选中文字，可以快速提问哦</b></div>' +
+        '<div class="msg-bubble ai">你好！我是你的 AI 吉他教练<br>对练习报告有任何疑问，或者想了解如何改进，随时问我！<br><br><b>小技巧：在报告中选中文字，可以快速提问哦</b></div>' +
         '</div>' +
         '<div class="chat-panel-input-area">' +
         '<input type="text" id="chatPanelInput" placeholder="输入你的问题...">' +
@@ -957,7 +941,7 @@ function initQuoteAsk() {
     const btn = document.createElement("button");
     btn.id = "quoteAskBtn";
     btn.className = "quote-ask-btn";
-    btn.textContent = "💬 就此段提问";
+    btn.textContent = "就此段提问";
     document.body.appendChild(btn);
     btn.style.display = "none";
 
@@ -1128,6 +1112,7 @@ function escapeHtml(text) {
 
 // ========== 工具函数 ==========
 function resetProgress() {
+    stopVideoSmoothProgress();
     progressBar.style.width = "0%";
     progressMessage.textContent = "准备中...";
     ["step1", "step2", "step3", "step4"].forEach(id => {
@@ -1158,8 +1143,10 @@ function updateStep(stepId, status) {
 
 function animateScore(elementId, target) {
     const el = document.getElementById(elementId);
+    const ring = el ? el.closest(".score-card") : null;
     if (target === "--" || target == null) {
         el.textContent = "--";
+        if (ring) ring.style.setProperty("--p", 0);
         return;
     }
     let current = 0;
@@ -1171,6 +1158,7 @@ function animateScore(elementId, target) {
             clearInterval(timer);
         }
         el.textContent = Math.round(current);
+        if (ring) ring.style.setProperty("--p", current);
     }, 40);
 }
 

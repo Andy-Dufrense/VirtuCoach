@@ -136,7 +136,7 @@ def create_analysis_router(analysis_service, upload_dir, frontend_dir):
         }
 
         background_tasks.add_task(
-            analysis_service.run, task_id, video_path, instrument, level,
+            analysis_service.run_queued, task_id, video_path, instrument, level,
             router.tasks[task_id]["title"], router.tasks, capo
         )
         return {"task_id": task_id, "status": "uploaded"}

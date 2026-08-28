@@ -3,7 +3,17 @@ title VirtuCoach-Graduate
 set PYTHONIOENCODING=utf-8
 set HF_HUB_OFFLINE=1
 set HF_ENDPOINT=https://hf-mirror.com
-cd /d F:\VirtuCoach-Graduate
+
+rem ============================================================
+rem  Automatically run from this script's own folder, so the
+rem  project works on any drive letter (F:/G:/...) on any PC.
+rem ============================================================
+cd /d "%~dp0"
+
+rem Prefer the portable Python installed next to the project
+rem (<disk>:\Python310\python.exe); fall back to python on PATH.
+for %%I in ("%~dp0..\Python310\python.exe") do set "PY=%%~fI"
+if not exist "%PY%" set "PY=python"
 
 echo.
 echo   ==========================================
@@ -13,7 +23,7 @@ echo.
 echo   [*] Starting backend on port 1218 ...
 echo.
 
-start "VirtuCoachGraduate" /B F:\Python310\python.exe run.py
+start "VirtuCoachGraduate" /B "%PY%" run.py
 
 echo   [*] Waiting for backend to be ready...
 set RETRY=0

@@ -525,7 +525,7 @@ function resetVideoRecord() {
     videoRecordReady.style.display = "none";
     videoRecordPreviewWrap.style.display = "none";
     startVideoRecordBtn.style.display = "inline-block";
-    startVideoRecordBtn.textContent = "📷 录制视频";
+    startVideoRecordBtn.textContent = "录制视频";
     startVideoRecordBtn.disabled = false;
     videoRecordTimer.style.display = "none";
 }
@@ -657,7 +657,7 @@ function renderChordResult(data) {
 
     const headerEl = document.querySelector(".hand-result-card h3");
     if (headerEl) {
-        headerEl.textContent = `🔍 ${data.chord_name || ""} 和弦手型检查`;
+        headerEl.textContent = `${data.chord_name || ""} 和弦手型检查`;
     }
 
     const score = data.overall_score;
@@ -674,7 +674,7 @@ function renderChordResult(data) {
         badge.style.color = "var(--success)";
     } else {
         const severeCount = data.issues.filter(i => i.severity === "severe").length;
-        badge.textContent = severeCount > 0 ? `⚠️ ${data.issues.length} 个问题` : `💡 ${data.issues.length} 个建议`;
+        badge.textContent = severeCount > 0 ? `⚠️ ${data.issues.length} 个问题` : `${data.issues.length} 个建议`;
         badge.style.background = severeCount > 0 ? "var(--danger-light)" : "var(--warning-light)";
         badge.style.color = severeCount > 0 ? "var(--danger)" : "var(--warning)";
     }
@@ -683,7 +683,7 @@ function renderChordResult(data) {
     if (qualityNote) {
         const noteBg = data.audio_quality === "poor" ? "var(--danger-light)" : "var(--warning-light)";
         const noteColor = data.audio_quality === "poor" ? "var(--danger)" : "var(--warning)";
-        const noteIcon = data.audio_quality === "poor" ? "⚠️" : "💡";
+        const noteIcon = data.audio_quality === "poor" ? "⚠️" : "";
         const qualityNoteHtml = `<div style="margin-top:12px;padding:10px 12px;background:${noteBg};border-radius:8px;border-left:3px solid ${noteColor};">
             <span style="color:${noteColor};font-size:14px;line-height:1.5;">${noteIcon} ${qualityNote}</span>
         </div>`;
@@ -697,7 +697,7 @@ function renderChordResult(data) {
     let stringResultsHtml = "";
     if (stringResults.length > 0) {
         stringResultsHtml = '<div style="margin-top:12px;padding:12px;background:var(--bg);border-radius:8px;">';
-        stringResultsHtml += '<h4 style="margin:0 0 8px 0;">🎵 逐弦音色检测</h4>';
+        stringResultsHtml += '<h4 style="margin:0 0 8px 0;">逐弦音色检测</h4>';
         stringResults.forEach(sr => {
             const statusIcon = sr.ok ? "✅" : (sr.status_text === "信号不足以判断" ? "⚠️" : "❌");
             const statusColor = sr.ok ? "var(--success)" : (sr.status_text === "信号不足以判断" ? "var(--warning)" : "var(--danger)");
@@ -734,7 +734,7 @@ function renderChordResult(data) {
             const sev = issue.severity || "moderate";
             return `<li class="${sevCls[sev] || 'severity-minor'}">
                 <b>[${sevLabels[sev] || sev}]</b> <b>${issue.body_part || ''}</b>: ${issue.description || ''}
-                ${issue.suggestion ? '<br><span style="color:var(--success);">💡 ' + issue.suggestion + '</span>' : ''}
+                ${issue.suggestion ? '<br><span style="color:var(--success);">' + issue.suggestion + '</span>' : ''}
             </li>`;
         }).join('') + '</ul>';
         issuesContainer.innerHTML += issuesHtml;
@@ -750,11 +750,11 @@ function renderChordResult(data) {
         const statusIcon = { ok: "✅", deviation: "⚠️", error: "❌" };
         const statusLabel = { ok: "正确", deviation: "偏差", error: "错误" };
         let compareHtml = '<div style="margin-top:12px;padding:12px;background:var(--bg);border-radius:8px;">';
-        compareHtml += '<h4 style="margin:0 0 8px 0;">🔍 逐指对比诊断</h4>';
+        compareHtml += '<h4 style="margin:0 0 8px 0;">逐指对比诊断</h4>';
         compareHtml += '<table style="width:100%;font-size:13px;border-collapse:collapse;">';
         compareHtml += '<tr style="border-bottom:1px solid var(--card-border);color:var(--text-dim);"><th style="padding:6px 4px;text-align:left;">手指</th><th style="padding:6px 4px;text-align:left;">标准要求</th><th style="padding:6px 4px;text-align:left;">实际观察</th><th style="padding:6px 4px;text-align:center;">状态</th></tr>';
         fingerComparison.forEach(fc => {
-            const icon = statusIcon[fc.status] || "➖";
+            const icon = statusIcon[fc.status] || "";
             const label = statusLabel[fc.status] || fc.status;
             const rowColor = fc.status === "error" ? "var(--danger-light)" : (fc.status === "deviation" ? "var(--warning-light)" : "");
             compareHtml += `<tr style="border-bottom:1px solid var(--card-border);background:${rowColor};">
@@ -764,7 +764,7 @@ function renderChordResult(data) {
                 <td style="padding:6px 4px;text-align:center;">${icon} ${label}</td>
             </tr>`;
             if (fc.note) {
-                compareHtml += `<tr style="border-bottom:1px solid var(--card-border);background:${rowColor};"><td></td><td colspan="3" style="padding:2px 4px 6px 4px;font-size:12px;color:var(--text-dim);">💬 ${fc.note}</td></tr>`;
+                compareHtml += `<tr style="border-bottom:1px solid var(--card-border);background:${rowColor};"><td></td><td colspan="3" style="padding:2px 4px 6px 4px;font-size:12px;color:var(--text-dim);">${fc.note}</td></tr>`;
             }
         });
         compareHtml += '</table></div>';
@@ -774,7 +774,7 @@ function renderChordResult(data) {
     const summary = data.summary || "";
     if (summary) {
         issuesContainer.innerHTML += `<div style="margin-top:12px;padding:12px;background:var(--card-bg);border-radius:8px;border-left:3px solid var(--primary);">
-            <h4 style="margin:0 0 6px 0;">📋 AI 诊断总结</h4>
+            <h4 style="margin:0 0 6px 0;">AI 诊断总结</h4>
             <p style="font-size:14px;line-height:1.7;color:var(--text);margin:0;">${summary}</p>
         </div>`;
     }
@@ -782,7 +782,7 @@ function renderChordResult(data) {
     const tips = data.practice_tips || [];
     if (tips.length > 0) {
         let tipsHtml = '<div style="margin-top:12px;padding:12px;background:var(--primary-glow);border-radius:8px;">';
-        tipsHtml += '<h4 style="margin:0 0 8px 0;color:var(--primary);">🎯 后续练习建议</h4>';
+        tipsHtml += '<h4 style="margin:0 0 8px 0;color:var(--primary);">后续练习建议</h4>';
         tips.forEach((tip, idx) => {
             tipsHtml += `<div style="padding:4px 0;font-size:14px;line-height:1.6;">${idx+1}. ${tip}</div>`;
         });

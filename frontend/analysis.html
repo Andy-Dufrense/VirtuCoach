@@ -4,15 +4,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VirtuCoach - 练习分析</title>
-    <link rel="stylesheet" href="style.css?v=15">
+    <link rel="stylesheet" href="style.css?v=19">
 </head>
 <body>
     <div class="app">
         <!-- 导航栏 -->
-        <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--card-bg);border:1px solid var(--card-border);border-radius:var(--radius);margin-bottom:16px;flex-wrap:wrap;">
-            <span style="font-size:18px;font-weight:700;background:linear-gradient(135deg,var(--primary-light),var(--primary));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">VirtuCoach</span>
-            <a href="/dashboard.html" style="color:var(--text-dim);font-size:13px;text-decoration:none;">← 返回控制台</a>
-            <span id="navUser" style="margin-left:auto;color:var(--text-dim);font-size:13px;"></span>
+        <div class="nav-bar">
+            <a class="nav-logo" href="/dashboard.html">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+                VirtuCoach
+            </a>
+            <div class="nav-links">
+                <a class="nav-link" href="/dashboard.html">控制台</a>
+                <a class="nav-link active" href="/analysis.html">开始练习</a>
+            </div>
+            <span id="navUser" class="nav-user" style="margin-left:auto;"></span>
             <button class="btn btn-secondary btn-small" onclick="VirtuCoach.logout()" id="logoutBtn" style="display:none;">退出</button>
         </div>
 
@@ -20,10 +26,10 @@
             <!-- 模式切换 -->
             <div class="mode-switcher" id="modeSwitcher">
                 <button class="mode-btn active" data-mode="video" id="modeVideoBtn">
-                    <span class="mode-icon">🎥</span> 视频分析
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg> 视频分析
                 </button>
                 <button class="mode-btn" data-mode="image" id="modeImageBtn">
-                    <span class="mode-icon">📷</span> 手型检查
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg> 手型检查
                 </button>
             </div>
 
@@ -32,15 +38,15 @@
                 <!-- 视频模式 -->
                 <div class="upload-mode-panel" id="uploadVideoMode">
                 <div class="upload-box" id="uploadBox">
-                    <div class="upload-icon">🎥</div>
+                    <div class="upload-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></div>
                     <h2>上传你的演奏视频</h2>
                     <p class="upload-hint">支持 MP4、MOV、AVI 格式，也支持在线录制</p>
                     <p class="upload-subhint">手机拍摄即可，请确保左右双手都在镜头内清晰可见</p>
                     <input type="file" id="videoInput" accept="video/*" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0,0,0,0);pointer-events:none">
                     <div class="video-action-row">
-                        <button class="btn btn-primary" id="selectBtn">选择视频文件</button>
+                        <button class="btn btn-primary" id="selectBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> 选择视频文件</button>
                         <span style="color:var(--text-dim);font-size:13px;">或</span>
-                        <button class="btn btn-record" id="startVideoRecordBtn">📷 录制视频</button>
+                        <button class="btn btn-record" id="startVideoRecordBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg> 录制视频</button>
                         <span class="chord-record-timer" id="videoRecordTimer" style="display:none;">录制中 0s</span>
                     </div>
 
@@ -48,7 +54,7 @@
                     <div class="chord-video-preview-wrap" id="videoRecordPreviewWrap" style="display:none;">
                         <video id="videoRecordPreview" class="chord-video-preview" autoplay playsinline muted style="display:none;"></video>
                         <div class="chord-video-placeholder" id="videoRecordPlaceholder">
-                            <span>📱 摄像头预览区域</span>
+                            <span>摄像头预览区域</span>
                         </div>
                     </div>
 
@@ -65,9 +71,9 @@
                         <div class="option-group">
                             <label>你的水平</label>
                             <select id="levelSelect">
-                                <option value="beginner">🌱 初学者</option>
-                                <option value="intermediate">🌿 中级</option>
-                                <option value="advanced">🌳 高级</option>
+                                <option value="beginner">初学者</option>
+                                <option value="intermediate">中级</option>
+                                <option value="advanced">高级</option>
                             </select>
                         </div>
                         <div class="option-group">
@@ -90,21 +96,21 @@
                 <!-- 和弦手型检查模式 -->
                 <div class="upload-mode-panel" id="uploadImageMode" style="display:none;">
                 <div class="upload-box" id="imageUploadBox">
-                    <div class="upload-icon">🎸</div>
+                    <div class="upload-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
                     <h2 id="handCheckTitle">检查和弦手型</h2>
                     <p class="upload-hint" id="handCheckHint">输入你要检查的和弦，上传3-5秒短视频</p>
 
                     <!-- 子模式切换：和弦检查 / 技巧检查 -->
                     <div class="hand-submode" id="handSubmode" style="margin-bottom:16px;">
-                        <button class="submode-btn active" id="submodeChordBtn" data-submode="chord">🎯 和弦检查</button>
-                        <button class="submode-btn" id="submodeTechniqueBtn" data-submode="technique">🎸 技巧检查</button>
+                        <button class="submode-btn active" id="submodeChordBtn" data-submode="chord">和弦检查</button>
+                        <button class="submode-btn" id="submodeTechniqueBtn" data-submode="technique">技巧检查</button>
                     </div>
 
                     <!-- 和弦检查区域 -->
                     <div id="chordCheckArea">
                     <div class="upload-options">
                         <div class="option-group" style="width:100%;max-width:400px;">
-                            <label>🎯 选择你要检查的和弦</label>
+                            <label>选择你要检查的和弦</label>
                             <select id="chordSelect"
                                     style="padding:10px 14px;border-radius:10px;border:1px solid var(--card-border);background:var(--bg);color:var(--text);font-size:16px;width:100%;">
                                 <option value="">-- 选择和弦 --</option>
@@ -114,7 +120,7 @@
                                        placeholder="输入和弦名称，如 C、Em、F#m..."
                                        style="padding:10px 14px;border-radius:10px;border:1px solid var(--card-border);background:var(--bg);color:var(--text);font-size:16px;width:100%;">
                             </div>
-                            <p style="color:var(--text-dim);font-size:11px;margin-top:4px;">💡 注意区分大小写：<b>C</b> 为大三和弦，<b>Cm</b> 为小三和弦，<b>C</b> ≠ <b>c</b></p>
+                            <p style="color:var(--text-dim);font-size:11px;margin-top:4px;">注意区分大小写：<b>C</b> 为大三和弦，<b>Cm</b> 为小三和弦，<b>C</b> ≠ <b>c</b></p>
                             <p id="chordMatchHint" style="color:var(--warning);font-size:12px;margin-top:4px;display:none;">
                                 ⚠️ 该和弦暂无知识库数据，分析将使用通用手型标准
                             </p>
@@ -126,7 +132,7 @@
                     <div id="techniqueCheckArea" style="display:none;">
                     <div class="upload-options">
                         <div class="option-group" style="width:100%;max-width:400px;">
-                            <label>🎸 选择你要检查的技巧</label>
+                            <label>选择你要检查的技巧</label>
                             <select id="techniqueSelect"
                                     style="padding:10px 14px;border-radius:10px;border:1px solid var(--card-border);background:var(--bg);color:var(--text);font-size:16px;width:100%;">
                                 <option value="">-- 选择技巧 --</option>
@@ -167,7 +173,7 @@
                     </div>
                     <!-- 技巧参考提示 -->
                     <div class="technique-ref-hint" id="techniqueRefHint" style="display:none;margin-top:8px;padding:10px 14px;background:var(--success-light);border-radius:8px;font-size:13px;color:var(--text-dim);">
-                        💡 录制时请确保左右双手都在镜头内清晰可见，参考视频可在下方查看
+                        录制时请确保左右双手都在镜头内清晰可见，参考视频可在下方查看
                     </div>
                     </div><!-- /techniqueCheckArea -->
 
@@ -183,9 +189,9 @@
                             </ol>
                         </div>
                         <input type="file" id="chordVideoInput" accept="video/*" style="display:none;">
-                        <button class="btn btn-primary" id="uploadChordVideoBtn">📁 上传视频文件</button>
+                        <button class="btn btn-primary" id="uploadChordVideoBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> 上传视频文件</button>
                         <span style="color:var(--text-dim);font-size:13px;margin:0 8px;">或</span>
-                        <button class="btn btn-record" id="startRecordBtn">📷 录制视频</button>
+                        <button class="btn btn-record" id="startRecordBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg> 录制视频</button>
                         <span class="chord-record-timer" id="recordTimer" style="display:none;">录制中 0s / 5s</span>
                     </div>
 
@@ -193,7 +199,7 @@
                     <div class="chord-video-preview-wrap" id="chordVideoPreviewWrap" style="display:none;">
                         <video id="chordPreview" class="chord-video-preview" autoplay playsinline muted style="display:none;"></video>
                         <div class="chord-video-placeholder" id="chordVideoPlaceholder">
-                            <span>📱 摄像头预览区域</span>
+                            <span>摄像头预览区域</span>
                         </div>
                     </div>
 
@@ -203,7 +209,7 @@
                         <video id="chordVideoResult" src="" controls style="max-width:320px;max-height:240px;border-radius:10px;"></video>
                     </div>
 
-                    <button class="btn btn-primary" id="analyzeChordBtn" style="display:none;">🔍 分析和弦手型</button>
+                    <button class="btn btn-primary" id="analyzeChordBtn" style="display:none;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 分析和弦手型</button>
                 </div>
                 </div><!-- /uploadImageMode -->
             </section>
@@ -212,7 +218,10 @@
             <section class="progress-section" id="progressSection" style="display:none;">
                 <div class="progress-card">
                     <div class="progress-header">
-                        <h3 id="progressTitle">正在分析...</h3>
+                        <div class="progress-title-wrap">
+                            <span class="spinner" id="progressSpinner"></span>
+                            <h3 id="progressTitle">正在分析...</h3>
+                        </div>
                         <span class="progress-status" id="progressStatus">处理中</span>
                     </div>
                     <div class="progress-bar-container">
@@ -220,28 +229,28 @@
                     </div>
                     <p class="progress-message" id="progressMessage">正在提取音频并分析音符...</p>
                     <div class="progress-timing" id="progressTiming" style="display:none;">
-                        <span>🎵 音频分析: <b id="audioElapsed">--</b></span>
-                        <span>✋ 手型检测: <b id="handElapsed">--</b></span>
-                        <span>🤖 AI评估: <b id="aiElapsed">--</b></span>
+                        <span>音频分析: <b id="audioElapsed">--</b></span>
+                        <span>手型检测: <b id="handElapsed">--</b></span>
+                        <span>AI评估: <b id="aiElapsed">--</b></span>
                     </div>
                     <div class="progress-steps">
                         <div class="step" id="step1">
-                            <span class="step-icon">📤</span>
+                            <span class="step-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></span>
                             <span class="step-text">上传视频</span>
                             <span class="step-check" id="check1">⌛</span>
                         </div>
                         <div class="step" id="step2">
-                            <span class="step-icon">🎵</span>
+                            <span class="step-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></span>
                             <span class="step-text">音频分析</span>
                             <span class="step-check" id="check2">⌛</span>
                         </div>
                         <div class="step" id="step3">
-                            <span class="step-icon">✋</span>
+                            <span class="step-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v2"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></span>
                             <span class="step-text">手型检测</span>
                             <span class="step-check" id="check3">⌛</span>
                         </div>
                         <div class="step" id="step4">
-                            <span class="step-icon">🤖</span>
+                            <span class="step-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg></span>
                             <span class="step-text">AI 综合评估</span>
                             <span class="step-check" id="check4">⌛</span>
                         </div>
@@ -276,7 +285,7 @@
 
                 <!-- 原视频回放（音频错误时间点可点击跳转） -->
                 <div class="report-card" id="videoReplayCard" style="display:none;">
-                    <h3>🎬 原视频回放</h3>
+                    <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg> 原视频回放</h3>
                     <video id="replayVideo" controls preload="metadata" playsinline
                            style="width:100%;max-height:420px;background:#000;border-radius:8px;"></video>
                     <div id="markerChips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;"></div>
@@ -284,15 +293,15 @@
 
                 <!-- 检测详情（放前面） -->
                 <div class="error-list-card" id="errorListCard">
-                    <h3>🎯 检测详情</h3>
+                    <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg> 检测详情</h3>
                     <div class="severity-legend">
                         <span class="legend-item"><span class="legend-dot critical"></span> 重要错误</span>
                         <span class="legend-item"><span class="legend-dot minor"></span> 轻微错误</span>
                         <span class="legend-item"><span class="legend-dot cosmetic"></span> 小问题</span>
                     </div>
                     <div class="tabs">
-                        <button class="tab active" data-tab="audio">🎵 音频问题</button>
-                        <button class="tab" data-tab="hand">✋ 手型问题</button>
+                        <button class="tab active" data-tab="audio"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg> 音频问题</button>
+                        <button class="tab" data-tab="hand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v2"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg> 手型问题</button>
                     </div>
                     <div class="tab-content" id="audioTab">
                         <ul id="audioErrorList"></ul>
@@ -301,28 +310,28 @@
                         <ul id="handIssueList"></ul>
                         <!-- 正确手型对比区 -->
                         <div class="hand-compare-section" id="handCompareSection" style="display:none;">
-                            <h4>📐 正确手型参考</h4>
+                            <h4>正确手型参考</h4>
                             <p class="hand-compare-hint">以下是正确手型的参考对比，请对照你的截图检查：</p>
                             <div class="hand-compare-grid" id="handCompareGrid"></div>
                         </div>
                     </div>
                     <!-- 问题截图 -->
                     <div class="snapshot-inline" id="snapshotInline" style="display:none;">
-                        <h4>📷 问题截图</h4>
+                        <h4><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg> 问题截图</h4>
                         <div class="snapshot-grid" id="snapshotGrid"></div>
                     </div>
                 </div>
 
                 <!-- AI 老师详细报告（放后面） -->
                 <div class="report-card">
-                    <h3>📋 AI 老师详细报告</h3>
+                    <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg> AI 老师详细报告</h3>
                     <div class="report-content" id="reportContent"></div>
                 </div>
 
                 <!-- 操作 -->
                 <div class="actions">
-                    <button class="btn btn-secondary" id="newAnalysisBtn">🔄 重新分析</button>
-                    <button class="btn btn-primary" id="copyReportBtn">📋 复制报告</button>
+                    <button class="btn btn-secondary" id="newAnalysisBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> 重新分析</button>
+                    <button class="btn btn-primary" id="copyReportBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> 复制报告</button>
                 </div>
             </section>
 
@@ -331,7 +340,10 @@
                 <!-- 手型分析进度条 -->
                 <div class="progress-card" id="handProgressCard">
                     <div class="progress-header">
-                        <h3 id="handProgressTitle">正在分析手型...</h3>
+                        <div class="progress-title-wrap">
+                            <span class="spinner" id="handProgressSpinner"></span>
+                            <h3 id="handProgressTitle">正在分析手型...</h3>
+                        </div>
                     </div>
                     <div class="progress-bar-container">
                         <div class="progress-bar" id="handProgressBar" style="width:0%;"></div>
@@ -339,22 +351,22 @@
                     <p class="progress-message" id="handProgressMessage">准备中...</p>
                     <div class="progress-steps">
                         <div class="step active" id="hStep1">
-                            <span class="step-icon">🎞️</span>
+                            <span class="step-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg></span>
                             <span class="step-text">关键帧提取</span>
                             <span class="step-check" id="hCheck1">⌛</span>
                         </div>
                         <div class="step" id="hStep2">
-                            <span class="step-icon">✋</span>
+                            <span class="step-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v2"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></span>
                             <span class="step-text">手部关键点检测</span>
                             <span class="step-check" id="hCheck2">⌛</span>
                         </div>
                         <div class="step" id="hStep3">
-                            <span class="step-icon">🔍</span>
+                            <span class="step-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
                             <span class="step-text">手型分析对比</span>
                             <span class="step-check" id="hCheck3">⌛</span>
                         </div>
                         <div class="step" id="hStep4">
-                            <span class="step-icon">🤖</span>
+                            <span class="step-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg></span>
                             <span class="step-text">AI 诊断报告</span>
                             <span class="step-check" id="hCheck4">⌛</span>
                         </div>
@@ -362,7 +374,7 @@
                 </div>
                 <!-- 结果卡片 -->
                 <div class="hand-result-card" id="handResultCard" style="display:none;">
-                    <h3>🔍 手型分析结果</h3>
+                    <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> 手型分析结果</h3>
                     <div class="hand-result-header">
                         <div class="hand-score-display">
                             <span class="hand-score-big" id="handScore">--</span>
@@ -372,23 +384,23 @@
                     </div>
                     <div class="side-by-side-compare" id="sideBySideCompare">
                         <div class="compare-pane user-pane">
-                            <h4>📷 你的手型</h4>
+                            <h4>你的手型</h4>
                             <img id="userHandImage" src="" alt="你的手型">
                         </div>
                         <div class="compare-divider"><span>VS</span></div>
                         <div class="compare-pane ref-pane">
-                            <h4>✅ 正确参考</h4>
+                            <h4>正确参考</h4>
                             <img id="refHandImage" src="" alt="正确手型参考">
                             <p id="refHandDesc" style="font-size:12px;color:var(--text-dim);margin-top:8px;"></p>
                         </div>
                     </div>
                     <div class="hand-issue-detail-list" id="handIssueDetailList">
-                        <h4>📋 发现的问题</h4>
+                        <h4><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg> 发现的问题</h4>
                         <div id="handIssueItems"></div>
                         <p id="noIssuesMsg" style="color:var(--success);display:none;">✅ 手型规范，未发现明显问题！</p>
                     </div>
                     <div class="actions">
-                        <button class="btn btn-secondary" id="newHandAnalysisBtn">🔄 重新检查</button>
+                        <button class="btn btn-secondary" id="newHandAnalysisBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> 重新检查</button>
                     </div>
                 </div>
             </section>
@@ -396,12 +408,12 @@
         </main>
 
         <!-- 意见反馈 Widget -->
-        <button class="feedback-fab" id="feedbackFab" title="意见反馈">💡</button>
+        <button class="feedback-fab" id="feedbackFab" title="意见反馈"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
 
         <div class="feedback-modal-overlay" id="feedbackModal">
             <div class="feedback-modal">
                 <div class="feedback-modal-header">
-                    <h3>💡 意见反馈</h3>
+                    <h3>意见反馈</h3>
                     <button class="feedback-modal-close" id="feedbackClose">&times;</button>
                 </div>
                 <form id="feedbackForm" enctype="multipart/form-data">
@@ -419,10 +431,10 @@
                             <label>反馈类型 *</label>
                             <select name="severity" required>
                                 <option value="">请选择</option>
-                                <option value="suggestion">💡 功能建议</option>
-                                <option value="confusion">❓ 使用困惑</option>
-                                <option value="experience">😊 体验不佳</option>
-                                <option value="other">📝 其他</option>
+                                <option value="suggestion">功能建议</option>
+                                <option value="confusion">使用困惑</option>
+                                <option value="experience">体验不佳</option>
+                                <option value="other">其他</option>
                             </select>
                         </div>
                     </div>
@@ -456,8 +468,8 @@
     </div>
 
     <script src="js/auth.js"></script>
-    <script src="js/hand-check.js?v=15"></script>
-    <script src="app.js?v=15"></script>
+    <script src="js/hand-check.js?v=16"></script>
+    <script src="app.js?v=17"></script>
     <script>
     (function () {
       if (VirtuCoach.isLoggedIn()) {

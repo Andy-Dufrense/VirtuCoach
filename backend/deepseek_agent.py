@@ -80,7 +80,7 @@ class DeepSeekAgent:
         return clean
 
     @staticmethod
-    def _build_time_reference(audio_result: dict, detected_chords: list) -> str:
+    def _build_time_reference(audio_result: dict, detected_chords: list, chord_dominance: dict = None) -> str:
         """从检测数据中提取时间段速查表，供 AI 在练习建议中引用时间点。
 
         Returns:
@@ -92,11 +92,17 @@ class DeepSeekAgent:
         # 1. 检测到的和弦及其时间
         if detected_chords:
             lines.append("## 时间速查表（练习建议中用时间段描述位置，不要写几弦几品）")
-            lines.append("### 检测到的和弦")
-            for c in detected_chords[:5]:
-                name = c.get("chord_name", "?")
-                t = c.get("time", 0)
-                lines.append(f"- **{name}**（约{t:.0f}秒）")
+            if chord_dominance and chord_dominance.get("is_single"):
+                # 单和弦视频（主导和弦≥70%）：只列主导和弦，避免 AI 把误报片段当换和弦
+                dom_name = chord_dominance.get("dominant_chord_name") or detected_chords[0].get("chord_name", "?")
+                lines.append("### 检测到的和弦")
+                lines.append(f"- **{dom_name}**（整段基本为同一和弦，未识别到明确换和弦）")
+            else:
+                lines.append("### 检测到的和弦")
+                for c in detected_chords[:5]:
+                    name = c.get("chord_name", "?")
+                    t = c.get("time", 0)
+                    lines.append(f"- **{name}**（约{t:.0f}秒）")
 
         # 2. 弹奏时间范围
         notes = audio_result.get("notes", [])
@@ -114,6 +120,31 @@ class DeepSeekAgent:
                 lines.append(f"- 中段：约{mid:.0f}秒附近")
 
         return "\n".join(lines) + "\n" if lines else ""
+
+    def _build_chord_transition_note(self, video_data):
+        """和弦切换难点注记（Batch-1 Item 1）。
+
+        把系统算出的最难 1-2 个切换注入报告 prompt，驱动练习建议。
+        遵守「禁止写几弦几品」铁律：只用和弦名 + 手指动作描述。
+        """
+        transitions = (video_data or {}).get("chord_transitions", [])
+        if not transitions:
+            return ""
+        logger.info(f"和弦切换难点注入: {[(t.get('from'), t.get('to'), t.get('difficulty')) for t in transitions]}")
+        lines = [
+            "\n## 🎯 和弦切换难点（系统检测，供练习建议参考）\n",
+            "本次演奏检测到的和弦切换中，以下切换难度最高。请在「小作业」中针对最难的那个切换给出 1 条具体练习建议，"
+            "用和弦名和手指动作描述（如「先按住 F 横按，再一起移到 G」），严禁写出具体弦号/品位。",
+        ]
+        for t in transitions:
+            anchor = "、".join(t.get("anchor_fingers", []))
+            if anchor:
+                hint = f"有 {anchor} 可作锚点"
+            else:
+                hint = "无锚点手指，需整只手重新摆放"
+            lines.append(f"- {t['from']}→{t['to']}（难度 {t['difficulty']:.1f}，{hint}）")
+        lines.append("")
+        return "\n".join(lines)
 
     @staticmethod
     def _build_practice_direction(level: str, is_chord_player: bool, has_strumming: bool) -> str:
@@ -433,7 +464,7 @@ class DeepSeekAgent:
         if not self.available: return
         try:
             from openai import OpenAI
-            client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+            client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=120)
             stream = client.chat.completions.create(
                 model=self.model, messages=messages,
                 temperature=temperature, max_tokens=4096,
@@ -896,7 +927,8 @@ class DeepSeekAgent:
         clean_audio = self._clean_audio_for_ai(audio_result)
 
         # ── 练习建议时间参考（供 AI 用小作业中引用具体时间点）──
-        fret_reference = self._build_time_reference(audio_result, detected_chords)
+        chord_dom = (video_data or {}).get("chord_dominance", {}) if video_data else {}
+        fret_reference = self._build_time_reference(audio_result, detected_chords, chord_dominance=chord_dom)
 
         # ── 格式化音频诊断（两个分支共用）──
         diagnosis_text = ""
@@ -979,11 +1011,12 @@ class DeepSeekAgent:
                     pass
 
             dismissal_note = self._build_dismissal_note(ai_dismissed)
+            chord_transition_note = self._build_chord_transition_note(video_data)
             user_prompt = f'''## 曲目: {title}
 乐器: {instrument}
 水平: {level}
 分析模式: {mode_label}
-**模块定位: 音频诊断已由规则引擎自动完成（见下方），你的角色是「AI老师」而非「判官」——请基于诊断结果撰写教学报告，不必重复诊断过程。**{capo_note}{harmonics_note}{strumming_note}{tech_summary}{dismissal_note}{level_note}{quality_gate_note}
+**模块定位: 音频诊断已由规则引擎自动完成（见下方），你的角色是「AI老师」而非「判官」——请基于诊断结果撰写教学报告，不必重复诊断过程。**{capo_note}{harmonics_note}{strumming_note}{tech_summary}{dismissal_note}{level_note}{quality_gate_note}{chord_transition_note}
 {song_recommendation_text}
 
 {fret_reference}
@@ -1030,7 +1063,7 @@ class DeepSeekAgent:
 乐器: {instrument}
 水平: {level}
 分析模式: {mode_label}
-**模块定位: 音频诊断已由规则引擎自动完成（见下方），你的角色是「AI老师」而非「判官」——请基于诊断结果撰写教学报告，不必重复诊断过程。手型检测到的问题必须逐条在报告中回应。**{capo_note}{harmonics_note}{strumming_note}{tech_summary}{dismissal_note}{level_note}{quality_gate_note}
+**模块定位: 音频诊断已由规则引擎自动完成（见下方），你的角色是「AI老师」而非「判官」——请基于诊断结果撰写教学报告，不必重复诊断过程。手型检测到的问题必须逐条在报告中回应。**{capo_note}{harmonics_note}{strumming_note}{tech_summary}{dismissal_note}{level_note}{quality_gate_note}{chord_transition_note}
 {song_recommendation_text}
 
 {fret_reference}

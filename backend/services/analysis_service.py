@@ -87,6 +87,31 @@ class AnalysisService:
         self.reference_db = reference_db
         self.knowledge_db = knowledge_db
         self.practice_db_getter = practice_db_getter
+        self._analysis_lock = asyncio.Lock()
+        self._queue_depth = 0
+
+    async def run_queued(self, task_id: str, video_path: str, instrument: str,
+                         level: str, title: str, tasks: dict, capo: int = 0) -> None:
+        """FIFO 排队执行：同一时刻只有一个分析在跑，其余排队等待。
+
+        通过 asyncio.Lock 的自然 FIFO 语义保证先进先出，
+        _queue_depth 用于给排队中的任务提示前方还有多少任务。
+        """
+        self._queue_depth += 1
+        try:
+            tasks[task_id]["status"] = "queued"
+            ahead = self._queue_depth - 1 + (1 if self._analysis_lock.locked() else 0)
+            tasks[task_id]["message"] = (
+                f"排队中，前方还有 {ahead} 个分析任务..." if ahead > 0
+                else "排队中，即将开始分析..."
+            )
+            await asyncio.wait_for(self._analysis_lock.acquire(), timeout=1800)
+        finally:
+            self._queue_depth -= 1
+        try:
+            await self.run(task_id, video_path, instrument, level, title, tasks, capo)
+        finally:
+            self._analysis_lock.release()
 
     async def run(self, task_id: str, video_path: str, instrument: str,
                   level: str, title: str, tasks: dict, capo: int = 0) -> None:
@@ -170,6 +195,12 @@ class AnalysisService:
                     c["chord_name"] = c.get("chord_name", "Am7和弦").replace("Am7", "Am")
                     logger.info(f"和弦映射: Am7 → Am (t={c.get('time',0):.1f}s)")
 
+            # ===== Step 5.7: 录音质量门控（Batch-1 Item 4）=====
+            # yellow/red 录音下降低音频类信号权重：和弦置信度乘系数降级，
+            # 门控结果写入 audio_result["signal_quality_gate"] 供报告 prompt、
+            # 逐弦分析（Item 3）与前端透传使用。手型（视频信号）不受影响。
+            detected_chords = self._apply_quality_gate(detected_chords, audio_result)
+
             # ===== Step 6: 手型过滤（统一管道）=====
             first_note_time = self._get_first_note_time(audio_result)
             hand_filter = create_freeplay_pipeline()
@@ -231,18 +262,86 @@ class AnalysisService:
                     tasks[task_id]["message"] = "AI 视觉分析手型中..."
                     vision_result = self._run_vision_analysis(all_snaps, instrument, reference_images, deduped, video_data)
                     if vision_result.get("vision_issues"):
+                        # （2026-08-25 V4：force_hand 场景过滤非目标手）
+                        # 主检测走 force_hand="left" 时，Vision AI 仍可能基于视觉判断报
+                        # 右手手腕/手指问题——但右手扫弦/拨弦姿态用静态阈值全是误报。
+                        # 在合并前直接丢弃非目标手的 vision issues。
+                        target_hand = "左手"  # 主流程固定 force_hand="left"
+                        kept = []
+                        for vi in vision_result.get("vision_issues", []):
+                            vi_hand = vi.get("handedness", vision_result.get("handedness", ""))
+                            if vi_hand and vi_hand != target_hand:
+                                logger.info(f"Vision issue 过滤（force_hand={target_hand}）：{vi.get('description', '')[:40]}")
+                                continue
+                            kept.append(vi)
+                        vision_result["vision_issues"] = kept
                         video_data = self._merge_vision_results(video_data, deduped, vision_result)
 
             # ===== Step 9: 手型状态判定 =====
             video_data = self._determine_hand_status(video_data)
             video_data["detected_chords"] = detected_chords
+            # 单和弦标记（is_single）注入 video_data：_build_time_reference 靠它避免把
+            # 弹得差的单和弦误报成换和弦。audio_result 里的 chord_dominance 是按融合前的
+            # 和弦算的，这里用最终 detected_chords 重算保持一致。
+            video_data["chord_dominance"] = self.audio_analyzer._compute_chord_dominance(detected_chords)
+            # 和弦对难度（Batch-1 Item 1）：报告生成前算好，供 prompt 注入 + 后处理字段共用
+            video_data["chord_transitions"] = self._build_chord_transitions(detected_chords)
 
             # ===== Step 10: AI 报告生成 =====
             tasks[task_id]["progress"] = 75
             tasks[task_id]["message"] = "AI 老师评估中..."
 
+            # （2026-08-25 V4：扫弦/柱式视觉修正提前到 diagnose/generate_report 之前）
+            # 旧时序：_refine_clusters_with_hand_motion 在 _build_report 里跑——那是
+            # LLM 报告生成之后，修正从未回写 audio_result。LLM 的 strumming_note 读
+            # technique_segments（音频层原始误判），前端检测详情读 strumming_patterns
+            # （同样原始）→ data/4536251-柱式和弦.mp4 前端完整 pipeline 仍报"扫弦"
+            # （音频层 strumming seg conf=0.55 ≥0.5 触发"系统已确认"注入）。
+            # 新时序：视频侧数据（腕通道/右手分析）Step 6-9 已就绪，这里 refine 后
+            # 立刻回写 onset_clusters/strumming_patterns/technique_segments，
+            # 使 audio_diagnosis / LLM / 前端读到同一份修正后结果。
+            refined_clusters = self._refine_clusters_with_hand_motion(
+                audio_result.get("onset_clusters", []),
+                video_data.get("hand_landmarks", []),
+                right_hand=video_data.get("right_hand_analysis", {}),
+                wrist_track=video_data.get("wrist_track", []),
+            )
+            audio_result["onset_clusters"] = refined_clusters
+            audio_result["strumming_patterns"] = refined_clusters
+            vetoed = [c for c in refined_clusters if c.get("_hand_motion_override")]
+            if vetoed:
+                # technique_segments 同步：被否决时间窗内的 strumming 段降置信到
+                # <0.5——LLM 的"扫弦检测（系统已确认）"和推荐曲目上下文都按
+                # conf≥0.5 过滤，降置信即从报告里摘除，无需删段
+                for seg in audio_result.get("technique_segments", []):
+                    if seg.get("technique_id") != "strumming":
+                        continue
+                    s0, s1 = seg.get("start_time", 0), seg.get("end_time", 0)
+                    if any(c.get("start_time", 0) < s1 and c.get("end_time", 0) > s0
+                           for c in vetoed):
+                        old_c = seg.get("confidence", 0)
+                        seg["confidence"] = min(old_c, 0.45)
+                        seg["_visual_veto"] = True
+                        logger.info(f"technique_segment strumming 降置信 "
+                                    f"{old_c:.2f}→{seg['confidence']:.2f} "
+                                    f"(t={s0:.1f}-{s1:.1f}s 视觉无扫弦证据)")
+                # 全部 cluster 被否决 → strumming_quality 是基于误判扫弦算出的假数据
+                if not any(c.get("type") == "strumming" for c in refined_clusters):
+                    audio_result["strumming_quality"] = None
+                    logger.info("全部扫弦 cluster 被视觉否决 → strumming_quality 置空")
+
             # 运行音频诊断引擎（Layer 2：信号 → 结构化诊断）
             audio_diagnosis = diagnose(audio_result)
+
+            # 录音质量门控（Item 4）：red 录音时节奏类诊断标低置信，
+            # format_for_ai 会为其附加「仅供参考」警示，避免烂录音上武断批评
+            if audio_result.get("signal_quality_gate", {}).get("rhythm_low_confidence"):
+                for f in audio_diagnosis.findings:
+                    if f.category == "rhythm":
+                        f.low_confidence = True
+
+            # 扫弦交叉验证（Item 3）：音频扫弦 finding vs 视觉右手扫弦事件
+            self._cross_validate_strumming(audio_diagnosis, video_data)
 
             report = self.deepseek_agent.generate_report(
                 audio_result=audio_result,
@@ -316,6 +415,147 @@ class AnalysisService:
             tasks[task_id]["error_detail"] = traceback.format_exc()
 
     # ====== 私有步骤方法 ======
+
+    def _apply_quality_gate(self, detected_chords, audio_result):
+        """录音质量门控（Batch-1 Item 4）：yellow/red 录音降低音频信号权重。
+
+        纯逻辑方法（不访问 self 属性，单测以 None 作 self 直接调用）：
+        - red   → 和弦置信度 ×0.6，逐弦分析标记不可靠（Item 3 消费），节奏诊断低置信
+        - yellow→ 和弦置信度 ×0.85，逐弦分析保留但带 caveat
+        - green → 不干预
+        手型检测基于视频画面，永不受门控影响。
+        门控结果写入 audio_result["signal_quality_gate"]。
+        """
+        rq = audio_result.get("recording_quality") or {}
+        tier = rq.get("tier", "green")
+        gate = {
+            "tier": tier,
+            "chord_multiplier": 1.0,
+            "chord_confidence_downgraded": False,
+            "per_string_policy": "normal",     # normal / with_caveat / skip_unreliable
+            "rhythm_low_confidence": False,
+            "hand_detection_affected": False,  # 视频信号与录音质量解耦，恒为 False
+            "note": "",
+        }
+        if tier == "red":
+            gate.update(
+                chord_multiplier=0.6,
+                chord_confidence_downgraded=True,
+                per_string_policy="skip_unreliable",
+                rhythm_low_confidence=True,
+                note="录音质量差，音频类结论（和弦/节奏/音色）已系统性降级",
+            )
+        elif tier == "yellow":
+            gate.update(
+                chord_multiplier=0.85,
+                chord_confidence_downgraded=True,
+                per_string_policy="with_caveat",
+                note="录音有一定噪声，音频类结论置信度适度下调",
+            )
+
+        mult = gate["chord_multiplier"]
+        if mult != 1.0:
+            for c in detected_chords:
+                if "confidence" in c:
+                    c["confidence"] = round(c["confidence"] * mult, 2)
+            logger.info(f"录音质量门控: tier={tier}, 和弦置信度×{mult}, "
+                        f"{sum(1 for c in detected_chords if 'confidence' in c)}个和弦被降级")
+        else:
+            logger.info(f"录音质量门控: tier={tier}, 不干预")
+
+        audio_result["signal_quality_gate"] = gate
+        return detected_chords
+
+    @staticmethod
+    def _cross_validate_strumming(audio_diagnosis, video_data):
+        """扫弦交叉验证（Batch-1 Item 3）：音频扫弦 finding vs 视觉右手扫弦事件。
+
+        音频基于 technique_segments 判扫弦；视觉 strum_events 从右手腕帧间位移检测。
+        判据以方向交替模式为核心（扫弦 = DUDU 往返摆动；分解/手位调整方向随机，
+        事件数再多也不构成扫弦证据）：
+        - 视觉无扫弦模式（motion_score<0.3 且 max_run≤3）→ 音频「扫弦」可能是
+          分解和弦/单音被误判 → 扫弦 finding 置信 −0.25
+        - 视觉确认扫弦（motion_score>0.5，隐含交替段≥4）→ 置信 +0.05
+        弃权（abstain）：track_fps 缺失 = 15fps 腕通道未产出数据（侧拍没拍到
+        右手 / 通道超时 / 音频无扫弦段被门控跳过）。此时 3fps 回退数据的
+        motion_score 系统性偏低（采不到 100-250ms 的扫弦摆动），惩罚它会把
+        纯音频正确判出的扫弦错杀—— abstain 而非 penalty。
+        纯逻辑方法（不访问 self），单测以 None 作 self 直接调用。
+        """
+        rh = (video_data or {}).get("right_hand_analysis") or {}
+        motion_score = rh.get("strumming_motion_score", 0)
+        max_run = rh.get("max_alternating_run", 0)
+
+        strum_findings = [f for f in audio_diagnosis.findings if f.category == "strumming"]
+        if not strum_findings:
+            return
+
+        if not rh.get("track_fps"):
+            # 15fps 腕通道无数据 → 视觉证据不足以支持任何方向的调整
+            return
+
+        if motion_score < 0.3 and max_run <= 3:
+            adj = -0.25
+            reason = "视觉无扫弦动作"
+        elif motion_score > 0.5:
+            adj = 0.05
+            reason = "视觉确认扫弦"
+        else:
+            adj = 0.0
+            reason = "视觉扫弦信号弱"
+
+        for f in strum_findings:
+            f.confidence = max(0.0, min(1.0, round(f.confidence + adj, 2)))
+            f.metrics["cv_reason"] = reason
+
+    def _build_chord_transitions(self, detected_chords):
+        """从相邻和弦序列计算转移难度，返回最难的 1-2 个切换（Batch-1 Item 1）。
+
+        纯逻辑方法：输入检测到的和弦序列，输出难度最高的切换点，
+        供报告标注「难点切换」并驱动练习建议。查不到难度数据的和弦对跳过。
+        """
+        if not detected_chords or len(detected_chords) < 2:
+            return []
+        # 单和弦守卫（2026-08-18）：主导和弦按时长占比≥70% → 弹得差的单和弦可能被误报为多个标签，
+        # 此时不报「换和弦」，避免 AI 写出"从C换到G"。此守卫必须内建于此，
+        # 否则 2964 行的 `[] or self._build_chord_transitions(...)` fallback 会重建转换。
+        durations = {}
+        total = 0.0
+        for c in detected_chords:
+            d = c.get("end_time", c.get("time", 0)) - c.get("time", 0)
+            cid = c.get("chord_id", "")
+            if d > 0 and cid:
+                durations[cid] = durations.get(cid, 0.0) + d
+                total += d
+        if total > 0 and durations and (max(durations.values()) / total) >= 0.70:
+            return []
+        from services.chord_difficulty import load_chords_from_kb, lookup_chord, compute_transition
+
+        chords = load_chords_from_kb()
+        transitions = []
+        for i in range(len(detected_chords) - 1):
+            a = detected_chords[i]
+            b = detected_chords[i + 1]
+            cid_a = a.get("chord_id", "")
+            cid_b = b.get("chord_id", "")
+            if not cid_a or not cid_b or cid_a == cid_b:
+                continue
+            ca = lookup_chord(chords, cid_a)
+            cb = lookup_chord(chords, cid_b)
+            if ca is None or cb is None:
+                continue
+            t = compute_transition(ca, cb)
+            transitions.append({
+                "from": cid_a,
+                "to": cid_b,
+                "from_name": a.get("chord_name", cid_a),
+                "to_name": b.get("chord_name", cid_b),
+                "time": b.get("time", 0),
+                "difficulty": t["score"],
+                "anchor_fingers": t["anchor_fingers"],
+            })
+        transitions.sort(key=lambda x: x["difficulty"], reverse=True)
+        return transitions[:2]
 
     async def _run_quick_hand_zone(self, video_path, tasks, task_id):
         """快速估算左手在指板上的位置"""
@@ -1212,31 +1452,45 @@ class AnalysisService:
                 valid_fingers[fname] = vf
         return {"fingers": valid_fingers, "barre": False} if valid_fingers else {}
 
-    def _refine_clusters_with_hand_motion(self, onset_clusters, hand_landmarks, right_hand=None):
+    def _refine_clusters_with_hand_motion(self, onset_clusters, hand_landmarks, right_hand=None,
+                                          wrist_track=None):
         """用手腕运动幅度 + 逐次扫弦事件修正扫弦/柱式误判。
 
         扫弦时右手腕上下摆动幅度大（Y轴标准差 > 阈值），柱式/分解时幅度小。
-        仅将 strumming → block_chord 降级，不反向升级。
+        双向修正：strumming → block_chord 降级（视觉无扫弦证据），
+        arpeggio 等弱置信 → strumming 升级（视觉幅度/规律性达扫弦水平）。
+
+        阈值标定（data/ 8 视频基线，2026-08-25，15fps 腕通道）：
+          扫弦 cluster 窗口 std 0.045-0.089；指弹/柱式 0.002-0.027（间隙干净）
+          指弹误判扫弦的关键反证：音频 41 strokes 窗口内视觉仅 4 事件、
+          wrist_vel 0.067（真扫弦 0.29-0.58）
 
         Args:
             right_hand: video_processor._compute_right_hand_strumming() 的输出，
                         包含 strum_events（逐次扫弦方向+速度）
+            wrist_track: 15fps 右手腕轨迹 [{"t","x","y"}]（video_processor 腕通道输出）。
+                         优先使用：3fps 关键帧采不到 100-250ms 的扫弦摆动，
+                         std 会系统性低估；无腕轨迹时回退 hand_landmarks（阈值放宽）。
         """
         right_hand = right_hand or {}
-        if not onset_clusters or not hand_landmarks:
+        if not onset_clusters:
             return onset_clusters
 
-        # 找到右手（拨弦手）的 landmarks
-        right_hand_frames = [f for f in hand_landmarks if f.get("hand") == "Right"]
-        if len(right_hand_frames) < 10:
-            return onset_clusters
-
-        # 提取右手腕 (landmark 0) 的 Y 坐标时间序列
+        # 优先 15fps 腕轨迹；不足 15 点（<1s 数据）回退 3fps 关键帧
         wrist_y = []
-        for f in right_hand_frames:
-            lm = f.get("landmarks", [])
-            if len(lm) > 0:
-                wrist_y.append((f["time"], lm[0][1]))  # (time, y)
+        if wrist_track and len(wrist_track) >= 15:
+            wrist_y = [(p["t"], p["y"]) for p in wrist_track if "t" in p and "y" in p]
+        if len(wrist_y) < 15:
+            # 找到右手（拨弦手）的 landmarks
+            right_hand_frames = [f for f in (hand_landmarks or []) if f.get("hand") == "Right"]
+            if len(right_hand_frames) < 10:
+                return onset_clusters
+
+            # 提取右手腕 (landmark 0) 的 Y 坐标时间序列
+            for f in right_hand_frames:
+                lm = f.get("landmarks", [])
+                if len(lm) > 0:
+                    wrist_y.append((f["time"], lm[0][1]))  # (time, y)
 
         if len(wrist_y) < 10:
             return onset_clusters
@@ -1249,13 +1503,16 @@ class AnalysisService:
         strum_events = right_hand.get("strum_events", [])
         strum_motion_score = right_hand.get("strumming_motion_score", 0)
 
+        # 数据源判定：15fps 腕通道（wrist_track ≥15 点）std 可靠，用收紧阈值；
+        # 回退 3fps 关键帧时 std 系统性低估（采不到 100-250ms 摆动），保留旧阈值。
+        hi_fps = bool(wrist_track and len(wrist_track) >= 15)
+        std_confirm = 0.035 if hi_fps else 0.015
+        std_upgrade = 0.040  # 升级线（仅 15fps），略高于确认线防误升
+        wrist_vel = float(right_hand.get("wrist_velocity_avg", 0) or 0)
+
         refined = []
         for cluster in onset_clusters:
             ctype = cluster.get("type", "")
-            if ctype != "strumming":
-                refined.append(cluster)
-                continue
-
             t0 = cluster.get("start_time", 0)
             t1 = cluster.get("end_time", 0)
             if t1 <= t0:
@@ -1269,43 +1526,68 @@ class AnalysisService:
                 continue
 
             cluster_std = np.std(cluster_y)
+            audio_strokes = len(cluster.get("strokes", []) or [])
 
-            # 判断：局部波动大 或 全局波动大 → 真实扫弦
-            is_significant_motion = (cluster_std > 0.015 or global_std > 0.02)
-
-            # 右手分析增强：strumming_motion_score > 0.5 说明手腕有明显扫弦动作
-            if strum_motion_score > 0.5:
-                is_significant_motion = True
-
-            # AirStrum 交叉验证：统计时间窗口内视觉扫弦事件数
+            # 窗口内视觉扫弦事件统计（AirStrum 交叉验证）
             visual_strums_in_window = 0
-            if strum_events:
-                for se in strum_events:
-                    if t0 - 0.05 <= se["time"] <= t1 + 0.05:
-                        visual_strums_in_window += 1
+            strong_strums_in_window = 0
+            window_dirs = []
+            for se in strum_events:
+                if t0 - 0.05 <= se["time"] <= t1 + 0.05:
+                    visual_strums_in_window += 1
+                    window_dirs.append(1 if se["direction"] == "down" else -1)
+                    if se.get("peak_velocity", 0) >= 0.25:
+                        strong_strums_in_window += 1
 
-                # 视觉确认有扫弦动作 → 增强置信度
-                if visual_strums_in_window >= 1 and not is_significant_motion:
-                    is_significant_motion = True
+            if ctype == "strumming":
+                # 视觉确认扫弦（满足任一）：
+                #   1) 窗口手腕幅度达标（主判据，间隙干净的标定线）
+                #   2) ≥2 个强事件（peak≥0.25）——分解/手位调整单个 peak 也可达
+                #      0.43，但一窗口内 2 个强事件只有真扫弦能做到
+                #   3) 事件密度与音频 stroke 数吻合——指弹误判扫弦的关键反证：
+                #      音频 41 strokes vs 视觉 4 事件（vel=0.07）即假阳性
+                #   4) 高规律性+高速度兜底（收尾单次强下扫：std 被长窗口稀释，
+                #      但全局 motion>0.5 且 vel>0.15 排除指弹微动）
+                confirmed = (
+                    cluster_std > std_confirm
+                    or strong_strums_in_window >= 2
+                    or (audio_strokes >= 6
+                        and visual_strums_in_window >= max(4, 0.3 * audio_strokes))
+                    or (strum_motion_score > 0.5 and wrist_vel > 0.15
+                        and visual_strums_in_window >= 1)
+                )
+                if confirmed:
+                    if visual_strums_in_window >= 1 and cluster_std <= std_confirm:
+                        cluster = dict(cluster)
+                        cluster["_visual_strum_cross_validated"] = True
+                    logger.info(f"视听交叉验证: strumming 确认 "
+                                f"(std={cluster_std:.4f}, visual_strums={visual_strums_in_window}, "
+                                f"strong={strong_strums_in_window}, t={t0:.2f}-{t1:.2f})")
+                    refined.append(cluster)
+                else:
                     cluster = dict(cluster)
-                    cluster["_visual_strum_cross_validated"] = True
-                elif visual_strums_in_window == 0 and strum_motion_score < 0.3:
-                    # 视觉没有任何扫弦且全局评分低 → 音频很可能是假阳性
-                    is_significant_motion = False
+                    cluster["type"] = "block_chord"
+                    cluster["type_confidence"] = round(cluster.get("type_confidence", 0.5) * 0.7, 2)
+                    cluster["_hand_motion_override"] = True
+                    reason = (f"wrist_std={cluster_std:.4f}, global_std={global_std:.4f}, "
+                              f"visual_strums={visual_strums_in_window}/{audio_strokes}strokes")
+                    logger.info(f"手部运动修正: strumming→block_chord ({reason})")
+                    refined.append(cluster)
+                continue
 
-            if not is_significant_motion:
+            # 升级路径：音频弱置信误判（如越弹越快的慢速起始段被判 arpeggio），
+            # 但视觉幅度/规律性达扫弦水平（实测 std=0.0885 全场最高 + motion=0.98）
+            if (hi_fps
+                    and ctype in ("arpeggio", "block_chord", "broken_chord", "double_stop")
+                    and cluster.get("type_confidence", 0.5) < 0.6
+                    and cluster_std > std_upgrade
+                    and strum_motion_score > 0.4):
                 cluster = dict(cluster)
-                cluster["type"] = "block_chord"
-                cluster["type_confidence"] = round(cluster.get("type_confidence", 0.5) * 0.7, 2)
-                cluster["_hand_motion_override"] = True
-                reason = f"wrist_std={cluster_std:.4f}, global_std={global_std:.4f}"
-                if strum_events:
-                    reason += f", visual_strums={visual_strums_in_window}"
-                logger.info(f"手部运动修正: strumming→block_chord ({reason})")
-            elif visual_strums_in_window >= 1:
-                logger.info(f"视听交叉验证: strumming 确认 "
-                            f"(visual_strums={visual_strums_in_window}, "
-                            f"t={t0:.2f}-{t1:.2f})")
+                cluster["type"] = "strumming"
+                cluster["type_confidence"] = 0.5
+                cluster["_visual_strum_upgrade"] = True
+                logger.info(f"手部运动修正: {ctype}→strumming "
+                            f"(wrist_std={cluster_std:.4f}, motion={strum_motion_score:.2f})")
 
             refined.append(cluster)
 
@@ -3420,12 +3702,8 @@ class AnalysisService:
             if not audio_errs and audio_status == "ok":
                 audio_status = "issues"
 
-        # 手部运动修正：利用手腕摆动幅度区分扫弦/柱式
-        onset_clusters = self._refine_clusters_with_hand_motion(
-            audio_result.get("onset_clusters", []),
-            video_data.get("hand_landmarks", []),
-            right_hand=video_data.get("right_hand_analysis", {})
-        )
+        # 手部运动修正已提前到 Step 10（diagnose 之前）执行并回写 audio_result
+        onset_clusters = audio_result.get("onset_clusters", [])
 
         return {
             "score": score,
@@ -3454,4 +3732,6 @@ class AnalysisService:
             "detected_capo": audio_result.get("detected_capo", 0),
             "content_type": audio_result.get("content_type", "chord"),
             "recording_quality": audio_result.get("recording_quality", {}),
+            "signal_quality_gate": audio_result.get("signal_quality_gate", {}),
+            "chord_transitions": video_data.get("chord_transitions", []),
         }

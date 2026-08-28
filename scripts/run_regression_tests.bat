@@ -1,22 +1,27 @@
 @echo off
-title VirtuCoach-Graduate 回归测试
+title VirtuCoach-Graduate Regression Tests
 set PYTHONIOENCODING=utf-8
 set HF_HUB_OFFLINE=1
 set HF_ENDPOINT=https://hf-mirror.com
-cd /d F:\VirtuCoach-Graduate
+
+rem Automatically move to the project root (parent of scripts\),
+rem so it works on any drive letter (F:/G:/...) on any PC.
+cd /d "%~dp0.."
+
+rem Prefer the portable Python installed next to the project.
+for %%I in ("%~dp0..\Python310\python.exe") do set "PY=%%~fI"
+if not exist "%PY%" set PY=python
 
 echo.
 echo   ============================================
-echo     VirtuCoach-Graduate 一键回归测试
-echo     和弦检测 / 扫弦分类 / 评分基线 三套
+echo     VirtuCoach-Graduate  -  Regression Tests
+echo     Chord detection / Strum classification /
+echo     Score baselines
 echo   ============================================
 echo.
-
-set PY=F:\Python310\python.exe
-if not exist %PY% set PY=python
 
 %PY% -m pytest tests/chord_regression/ tests/strum_regression/ tests/score_regression/ -v --tb=short
 
 echo.
-echo   测试结束。退出码: %errorlevel% (0 = 全部通过)
+echo   Tests finished. Exit code: %errorlevel% (0 = all passed)
 pause

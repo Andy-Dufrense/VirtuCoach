@@ -53,3 +53,6 @@ backend/ref_list.txt
 backend/test_*.json
 backend/test_*.txt
 backend/clean_test_result.json
+
+# --- 用户问题截图，永不提交 ---
+problem_snapshot/

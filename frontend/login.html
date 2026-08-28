@@ -1,45 +1,53 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>登录 - VirtuCoach</title>
-  <link rel="stylesheet" href="style.css">
-  <style>
-    .auth-page { display:flex; justify-content:center; align-items:center; min-height:80vh; }
-    .auth-card { background:var(--card-bg); border:1px solid var(--card-border); border-radius:var(--radius); padding:36px 32px; width:100%; max-width:400px; }
-    .auth-card .logo { font-size:28px; font-weight:700; text-align:center; margin-bottom:4px; background:linear-gradient(135deg,var(--primary-light),var(--primary)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
-    .auth-card .subtitle { text-align:center; color:var(--text-dim); margin-bottom:28px; font-size:14px; }
-    .form-group { margin-bottom:16px; }
-    .form-group label { display:block; margin-bottom:6px; font-size:14px; color:var(--text-dim); }
-    .form-group input { width:100%; padding:10px 14px; border-radius:8px; border:1px solid var(--card-border); background:var(--bg); color:var(--text); font-size:15px; box-sizing:border-box; }
-    .form-group input:focus { outline:none; border-color:var(--primary-light); }
-    .auth-error { color:var(--danger); font-size:13px; margin-bottom:12px; display:none; }
-    .auth-link { text-align:center; margin-top:16px; font-size:14px; color:var(--text-dim); }
-    .auth-link a { color:var(--primary-light); text-decoration:none; }
-    .auth-link a:hover { text-decoration:underline; }
-    .btn-full { width:100%; padding:12px; font-size:16px; }
-    .pw-wrap { position:relative; }
-    .pw-toggle { position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:14px; }
-  </style>
+  <title>登录 — VirtuCoach</title>
+  <link rel="stylesheet" href="style.css?v=19">
 </head>
 <body>
-  <div class="app">
-    <div class="auth-page">
+
+  <div class="auth-split">
+    <!-- 左侧品牌区 -->
+    <div class="auth-brand">
+      <a class="brand" href="/">
+        <span class="brand-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+        </span>
+        <span class="brand-name">Virtu<em>Coach</em></span>
+      </a>
+      <h2>欢迎回来，<br><span class="grad">继续你的练习之旅</span></h2>
+      <p>你的练习记录、进步曲线和 AI 报告都在等你。</p>
+      <div class="auth-brand-points">
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>多维评分：音准 / 节奏 / 和弦 / 手型</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>AI 生成个性化练习建议</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>练习历史与趋势可视化</span>
+      </div>
+    </div>
+
+    <!-- 右侧表单区 -->
+    <div class="auth-form-side">
       <div class="auth-card">
-        <div class="logo">VirtuCoach</div>
-        <div class="subtitle">AI 吉他陪练系统</div>
+        <a class="auth-back" href="/">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>
+          返回首页
+        </a>
+        <div class="form-title">登录</div>
+        <div class="subtitle">使用你的 VirtuCoach 账号继续</div>
         <div class="auth-error" id="authError"></div>
         <form id="loginForm">
           <div class="form-group">
-            <label>用户名或邮箱</label>
+            <label for="username">用户名或邮箱</label>
             <input type="text" id="username" required autocomplete="username" placeholder="请输入用户名或邮箱">
           </div>
           <div class="form-group">
-            <label>密码</label>
+            <label for="password">密码</label>
             <div class="pw-wrap">
               <input type="password" id="password" required autocomplete="current-password" placeholder="请输入密码">
-              <button type="button" class="pw-toggle" id="pwToggle">👁</button>
+              <button type="button" class="pw-toggle" id="pwToggle" aria-label="显示或隐藏密码">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
             </div>
           </div>
           <button type="submit" class="btn btn-primary btn-full">登 录</button>
@@ -52,8 +60,9 @@
         </div>
       </div>
     </div>
-    <div class="toast" id="toast"></div>
   </div>
+
+  <div class="toast" id="toast"></div>
 
   <script src="js/auth.js"></script>
   <script>

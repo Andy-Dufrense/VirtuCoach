@@ -24,7 +24,31 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # ---- paths (computed from project root, overridable via env) ----
 UPLOAD_DIR = os.environ.get("VIRTUCOACH_UPLOAD_DIR", str(PROJECT_ROOT / "uploads"))
 MODEL_DIR = os.environ.get("VIRTUCOACH_MODEL_DIR", str(PROJECT_ROOT / "models"))
-FFMPEG_PATH = os.environ.get("FFMPEG_PATH", "ffmpeg")
+
+
+def _resolve_ffmpeg_path() -> str:
+    """定位 ffmpeg 可执行文件：环境变量 → PATH → imageio_ffmpeg 自带二进制。
+
+    移动硬盘换电脑后 PATH 里不一定有 ffmpeg，而 runtime Python 的
+    imageio_ffmpeg 包里通常自带一个完整 ffmpeg，用它兜底最稳妥。
+    """
+    env = os.environ.get("FFMPEG_PATH", "").strip()
+    if env:
+        return env
+    try:
+        import shutil
+        if shutil.which("ffmpeg"):
+            return "ffmpeg"
+    except Exception:
+        pass
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return "ffmpeg"
+
+
+FFMPEG_PATH = _resolve_ffmpeg_path()
 
 # ---- DeepSeek API ----
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")

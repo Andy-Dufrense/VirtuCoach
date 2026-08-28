@@ -94,7 +94,7 @@ function initRefManager() {
             .catch(function() { showToast("分析失败，请重试", "error"); })
             .finally(function() {
                 analyzeBtn.disabled = false;
-                analyzeBtn.textContent = "🤖 AI 分析";
+                analyzeBtn.textContent = "AI 分析";
             });
     });
 

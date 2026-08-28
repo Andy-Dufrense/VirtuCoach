@@ -1,6 +1,7 @@
 """手型检查路由（和弦 + 技巧）"""
 import os
 import uuid
+import asyncio
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
@@ -71,7 +72,13 @@ def create_hand_check_router(hand_check_service, upload_dir, practice_db_getter=
         with open(video_path, "wb") as f:
             f.write(content)
 
-        result = hand_check_service.check(video_path, chord, instrument, mode, technique)
+        # 同步阻塞调用（视频分析数十秒）必须走线程池，否则冻结事件循环，
+        # 拖死所有任务的轮询和排队消息（与 chat.py 异步化同类修复）。
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: hand_check_service.check(video_path, chord, instrument, mode, technique),
+        )
 
         if current_user and practice_db_getter:
             try:
@@ -189,10 +196,15 @@ def create_hand_check_router(hand_check_service, upload_dir, practice_db_getter=
                 "is_front": "正视图" in str(ref_tags),
             })
 
-        result = hand_check_service.vision_analyzer.analyze_hand_posture_image(
-            image_path=image_path, instrument=instrument,
-            reference_paths=ref_image_paths if ref_image_paths else None,
-            check_area=check_area,
+        # 视觉 LLM 调用（10~30s）同样走线程池，避免冻结事件循环
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: hand_check_service.vision_analyzer.analyze_hand_posture_image(
+                image_path=image_path, instrument=instrument,
+                reference_paths=ref_image_paths if ref_image_paths else None,
+                check_area=check_area,
+            ),
         )
 
         response = {

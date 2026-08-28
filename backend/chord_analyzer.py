@@ -29,6 +29,7 @@ class StringResult:
     decay_time: float     # 衰减到-20dB的时间(秒)
     has_signal: bool      # 是否有可检测信号
     ok: bool              # 综合判定
+    flatness: float = 0.0  # 频谱平坦度（>0.30 = 闷音/未按实）
 
 
 @dataclass
@@ -75,9 +76,10 @@ class ChordAnalyzer:
     def extract_audio(self, video_path: str) -> Optional[str]:
         """从视频提取音频为 WAV（16kHz mono）"""
         try:
+            from config import FFMPEG_PATH
             wav_path = video_path + ".chord.wav"
             cmd = [
-                "ffmpeg", "-y", "-i", video_path,
+                FFMPEG_PATH, "-y", "-i", video_path,
                 "-vn", "-acodec", "pcm_s16le",
                 "-ar", "16000", "-ac", "1",
                 wav_path
@@ -322,7 +324,7 @@ class ChordAnalyzer:
             expected_freqs[string_num] = (expected_hz, note_name)
 
         # For each onset, find the dominant frequency and match to closest string
-        string_best = {}  # string_num → (onset_t, rms_db, clarity, decay_t, spec_cent)
+        string_best = {}  # string_num → (onset_t, rms_db, clarity, decay_t, spec_cent, flatness)
         used_onsets = set()
 
         for onset_t in onsets:
@@ -355,7 +357,7 @@ class ChordAnalyzer:
             expected_hz, note_name = expected_freqs[best_string]
 
             # Analyze segment quality against the matched string's expected pitch
-            rms_db, clarity, decay_t, spec_cent = self._analyze_segment(
+            rms_db, clarity, decay_t, spec_cent, flatness = self._analyze_segment(
                 segment, sr, noise_floor_db, expected_hz
             )
 
@@ -365,7 +367,7 @@ class ChordAnalyzer:
                 if clarity <= existing_clarity:
                     continue
 
-            string_best[best_string] = (onset_t, rms_db, clarity, decay_t, spec_cent)
+            string_best[best_string] = (onset_t, rms_db, clarity, decay_t, spec_cent, flatness)
             used_onsets.add(onset_t)
 
         # Build results for all 6 strings (⑥→①)
@@ -376,7 +378,7 @@ class ChordAnalyzer:
             _expected_hz, note_name = expected_freqs[string_num]
 
             if string_num in string_best:
-                onset_t, rms_db, clarity, decay_t, spec_cent = string_best[string_num]
+                onset_t, rms_db, clarity, decay_t, spec_cent, flatness = string_best[string_num]
                 results.append(StringResult(
                     string_num=string_num,
                     string_name=s_name,
@@ -388,6 +390,7 @@ class ChordAnalyzer:
                     decay_time=round(decay_t, 2),
                     has_signal=True,
                     ok=bool(clarity >= 0.5),
+                    flatness=round(flatness, 3),
                 ))
             else:
                 # No onset matched to this string — check if there's energy at the expected freq anyway
@@ -397,7 +400,7 @@ class ChordAnalyzer:
                 end_s = min(len(samples), mid_sample + int(0.4 * sr))
                 mid_segment = samples[start_s:end_s]
                 if len(mid_segment) > 100:
-                    _r, clarity, _d, _s = self._analyze_segment(
+                    _r, clarity, _d, _s, _f = self._analyze_segment(
                         mid_segment, sr, noise_floor_db, _expected_hz
                     )
                     if clarity >= 0.3:
@@ -407,6 +410,7 @@ class ChordAnalyzer:
                             rms_db=round(_r, 1), spectral_centroid=round(_s, 0),
                             clarity_score=round(clarity, 2), decay_time=round(_d, 2),
                             has_signal=True, ok=bool(clarity >= 0.5),
+                            flatness=round(_f, 3),
                         ))
                         continue
 
@@ -447,13 +451,27 @@ class ChordAnalyzer:
         peak_idx = np.argmax(hps)
         return float(freqs[lo_idx + peak_idx])
 
+    @staticmethod
+    def _spectral_flatness(seg: np.ndarray) -> float:
+        """频谱平坦度 = 几何平均/算术平均 of FFT（0=纯音谐波，1=白噪声/闷音）。
+
+        与 audio_analyzer._spectral_flatness 同一算法，阈值 flat>0.30=闷音。
+        """
+        if len(seg) < 128:
+            return -1.0
+        spec = np.abs(np.fft.rfft(seg * np.hanning(len(seg))))
+        spec = spec[spec > 1e-10]
+        if len(spec) == 0:
+            return 1.0
+        return float(np.exp(np.mean(np.log(spec))) / np.mean(spec))
+
     def _analyze_segment(
         self, segment: np.ndarray, sr: int,
         noise_floor_db: float, expected_hz: float,
-    ) -> Tuple[float, float, float, float]:
-        """分析单段音频：RMS、清晰度、衰减时间、频谱重心
+    ) -> Tuple[float, float, float, float, float]:
+        """分析单段音频：RMS、清晰度、衰减时间、频谱重心、频谱平坦度
 
-        Returns: (rms_db, clarity_score, decay_time, spectral_centroid)
+        Returns: (rms_db, clarity_score, decay_time, spectral_centroid, flatness)
         """
         # RMS 响度
         rms = np.sqrt(np.mean(segment ** 2))
@@ -462,7 +480,7 @@ class ChordAnalyzer:
         # 频谱分析
         n_fft = min(1024, len(segment))
         if n_fft < 64:
-            return rms_db, 0.0, 0.0, 0.0
+            return rms_db, 0.0, 0.0, 0.0, 0.0
 
         # 加窗
         window = np.hanning(n_fft)
@@ -536,12 +554,27 @@ class ChordAnalyzer:
         clarity = 0.4 * loudness_score + 0.35 * harmonic_score + 0.25 * decay_score
         clarity = max(0.0, min(1.0, clarity))
 
+        # 4. 频谱平坦度（闷音/未按实）：在能量峰值附近取 ~100ms 短窗计算，
+        # 避免整段 0.8s 的衰减尾噪声抬高 flatness。
+        if env_len > 3:
+            peak_sample = int(peak_idx * env_hop)
+            flat_win = segment[peak_sample:peak_sample + int(0.1 * sr)]
+        else:
+            flat_win = segment[:int(0.1 * sr)]
+        flatness = self._spectral_flatness(flat_win) if len(flat_win) >= 128 else -1.0
+
+        # 闷音惩罚：flatness > 0.30（与视频分析同一阈值）→ 手指没按实，弦闷住。
+        # 只压明确闷音，不动 0.22-0.30 的模糊带（干净音上的换弦/碰弦假阳性区）。
+        if flatness > 0.30:
+            clarity = min(clarity, 0.45)
+
         # 响度安全网：信号明显可闻时，即使谐波集中度异常也不应判为闷音
-        # 初学者可能按弦力度大但手指略微塌陷闷住邻弦——弦本身是响的，不应标记为"未弹响"
-        if loudness_score > 0.60 and clarity < 0.50:
+        # 初学者可能按弦力度大但手指略微塌陷闷住邻弦——弦本身是响的，不应标记为"未弹响"。
+        # 但响且闷（flatness 高）的音确实是闷音，安全网不能救回，故加 flatness<=0.30 门槛。
+        if loudness_score > 0.60 and clarity < 0.50 and flatness <= 0.30:
             clarity = 0.50
 
-        return rms_db, clarity, decay_time, spectral_centroid
+        return rms_db, clarity, decay_time, spectral_centroid, flatness
 
     def _freq_to_note(self, freq: float) -> str:
         """频率转音名"""
@@ -557,6 +590,15 @@ class ChordAnalyzer:
 
     @staticmethod
     def _sr_to_dict(sr: StringResult) -> dict:
+        muted = (not sr.ok) and bool(sr.has_signal) and (sr.flatness > 0.30)
+        if sr.ok:
+            status_text = "清晰 ✓"
+        elif muted:
+            status_text = "闷音（未按实）"
+        elif sr.has_signal:
+            status_text = "信号弱"
+        else:
+            status_text = "未检测到拨弦"
         return {
             "string_num": int(sr.string_num),
             "string_name": str(sr.string_name),
@@ -566,9 +608,10 @@ class ChordAnalyzer:
             "spectral_centroid": float(sr.spectral_centroid) if sr.spectral_centroid is not None else 0.0,
             "clarity_score": float(sr.clarity_score) if sr.clarity_score is not None else 0.0,
             "decay_time": float(sr.decay_time) if sr.decay_time is not None else 0.0,
+            "flatness": float(sr.flatness) if sr.flatness is not None else 0.0,
             "has_signal": bool(sr.has_signal),
             "ok": bool(sr.ok),
-            "status_text": "清晰 ✓" if sr.ok else ("信号弱" if sr.has_signal else "未检测到拨弦"),
+            "status_text": status_text,
         }
 
     # ====== 和弦知识库匹配 ======
@@ -1156,13 +1199,28 @@ class ChordAnalyzer:
                             f_val = finger_data.get("fret", 0)
                             pip = finger_data.get("pip_ideal")
                             mcp = finger_data.get("mcp_ideal")
+                            # 横按指标记：横按手指（食指）正确姿势就是伸直侧面压弦，
+                            # 常规角度阈值会误报「太竖直/太弯」。来源：note/desc/tip_contact/barre_note
+                            # 含「横按」，或 string 为范围 "1-5"（横按覆盖多弦）。
+                            _barre_markers = " ".join(
+                                str(finger_data.get(k, ""))
+                                for k in ("note", "desc", "tip_contact", "barre_note")
+                            )
+                            _is_barre = ("横按" in _barre_markers) or (
+                                isinstance(s, str) and "-" in s
+                            )
                             if s and f_val is not None:
+                                if isinstance(s, str) and "-" in s:
+                                    # 横按范围 "1-5"/"5-1"/"1-2" → 取 min 弦作代表
+                                    s = min(int(x) for x in s.split("-"))
                                 finger_map[finger_name] = (int(s), int(f_val))
                             if pip is not None or mcp is not None:
                                 finger_angles[finger_name] = {
                                     "pip_ideal": pip,
                                     "mcp_ideal": mcp,
                                 }
+                                if _is_barre:
+                                    finger_angles[finger_name]["barre"] = True
 
                 if not finger_map:
                     continue

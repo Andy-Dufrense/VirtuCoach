@@ -6,6 +6,7 @@
 
 import os
 import json
+import re
 import uuid
 from typing import Optional
 
@@ -141,6 +142,13 @@ class HandCheckService:
                 "summary": f"手型检测完成（AI评估暂不可用）。共检测到 {len(hand_issues)} 个问题。",
             }
 
+        # 把规则引擎的置信度/出现次数/诊断ID 回填到 AI 重写的问题上
+        # （AI 可能改写描述，按 body_part + 描述相似度匹配回填）
+        eval_issues = evaluation.get("issues", [])
+        if eval_issues and hand_issues:
+            eval_issues = self._attach_issue_meta(eval_issues, hand_issues)
+        evaluation["issues"] = eval_issues
+
         audio_quality = getattr(audio_result, "audio_quality", "unknown") if not is_technique_mode else "unknown"
 
         return {
@@ -157,6 +165,46 @@ class HandCheckService:
             "reference_images": reference_images,
             "mode": mode, "audio_quality": audio_quality, "quality_note": quality_note,
         }
+
+    def _attach_issue_meta(self, ai_issues, hand_issues):
+        """把规则引擎的置信度/出现次数/诊断ID 回填到 AI 重写的问题上"""
+        for ai in ai_issues:
+            meta = self._find_issue_meta(ai, hand_issues)
+            if not meta:
+                continue
+            if "置信度" not in ai:
+                ai["置信度"] = meta.get("置信度")
+            if "出现次数" not in ai:
+                ai["出现次数"] = meta.get("出现次数")
+            if "诊断ID" not in ai:
+                ai["诊断ID"] = meta.get("诊断ID")
+        return ai_issues
+
+    @staticmethod
+    def _find_issue_meta(ai_issue, hand_issues):
+        """按 body_part + 描述相似度（difflib，容忍 AI 改写插词）找对应的规则引擎问题"""
+        from difflib import SequenceMatcher
+        part = ai_issue.get("body_part", "")
+        desc = HandCheckService._norm_desc(ai_issue.get("description", ""))
+        if not part or not desc:
+            return None
+        best, best_ratio = None, 0.0
+        for h in hand_issues:
+            if h.get("body_part") != part:
+                continue
+            h_desc = HandCheckService._norm_desc(h.get("description", ""))
+            if not h_desc:
+                continue
+            ratio = SequenceMatcher(None, desc, h_desc).ratio()
+            if ratio > best_ratio:
+                best_ratio, best = ratio, h
+        return best if best_ratio >= 0.4 else None
+
+    @staticmethod
+    def _norm_desc(s):
+        """归一化问题描述：去掉「（疑似）」和 ⚠️/💡 前缀"""
+        s = s.replace("（疑似）", "")
+        return re.sub(r"^[⚠️💡]+\s*", "", s).strip()
 
     def _load_technique_allowed_keywords(self, technique_data, is_technique_mode, is_right_hand_tech):
         """从技巧知识库加载豁免关键词。增加同义变体和反向关键词过滤。"""
@@ -275,7 +323,7 @@ class HandCheckService:
             if video_data.get("snapshots"):
                 hands_detected = True
 
-        # 转换格式，保留 ⚠️/💡 前缀的严重程度信息
+        # 转换格式，保留 ⚠️/💡 前缀的严重程度信息，并回填置信度/出现次数做门控
         hand_issues = []
         for h in filtered:
             who = h.get("哪只手", h.get("handedness", ""))
@@ -289,11 +337,67 @@ class HandCheckService:
                     severity = "mild"
                 else:
                     severity = "moderate"
+                # 去掉 ⚠️/💡 前缀，避免「疑似⚠️」拼接
+                desc = re.sub(r"^[⚠️💡]+\s*", "", iss).strip()
+                conf = h.get("置信度", h.get("handedness_confidence", 0.0))
+                times = h.get("所有检测时间点") or []
+                occ = len(times) if times else int(h.get("出现次数", h.get("来源数", 1)) or 1)
+                # 置信度门控：MediaPipe 手性判断置信度低 → 检测证据不足，降级并标「疑似」
+                # （0.6 与 video_processor 内部"低于 0.6 不信任手性判断"的阈值一致）
+                if isinstance(conf, (int, float)) and conf < 0.6:
+                    if severity == "severe":
+                        severity = "moderate"
+                    elif severity == "moderate":
+                        severity = "mild"
+                    desc = "（疑似）" + desc
                 hand_issues.append({
                     "body_part": who, "hand_side": who,
-                    "description": iss, "severity": severity,
+                    "description": desc, "severity": severity,
                     "timestamp": float(ts_val) if ts_val is not None else 0,
+                    "置信度": conf, "出现次数": occ,
+                    "诊断ID": h.get("诊断ID"),
                 })
+
+        # 单和弦手型检查只报明确问题（⚠️严重）。💡轻微角度提示（手腕太直/有点太直/偏竖直/太紧张）
+        # 在正确和弦上也大量触发，且会被 pipeline 的 _summarize_problems 归纳成无前缀的
+        # 「手指：xxx站得太直」中等严重度条目，同样是与「无错误」冲突的噪声。故只保留 severe。
+        # 注意：浮空指（下方追加）与音频闷音是独立问题，不受此过滤影响。
+        hand_issues = [h for h in hand_issues if h.get("severity") == "severe"]
+
+        # 浮空指检测：KB 期望按弦的手指，若被 VL 信号判定为浮空（伸得太直、未按实），
+        # 则「太竖直/太直/太弯」是错误诊断——浮空=没按弦，报「戳弦太竖直」会误导。
+        # 改为：抑制该指的误报，并报「浮空未按弦」。
+        if chord_data:
+            _en2cn = {"index": "食指", "middle": "中指", "ring": "无名指", "pinky": "小指"}
+            _vl = video_data.get("vl_signals", {}) or {}
+            _floating_en = _vl.get("floating", []) or []
+            if _floating_en:
+                _expected = set()
+                for _fn, _fi in (chord_data.get("fingers", {}) or {}).items():
+                    if isinstance(_fi, dict) and _fi.get("string") is not None:
+                        _expected.add(_fn)
+                _floating_cn = [_en2cn.get(f, f) for f in _floating_en]
+                _angle_kw = ("太竖直", "太直", "太弯")
+                _kept = []
+                for _hi in hand_issues:
+                    _desc = _hi.get("description", "")
+                    _drop = any(
+                        _cn in _expected and _cn in _desc and any(k in _desc for k in _angle_kw)
+                        for _cn in _floating_cn
+                    )
+                    if not _drop:
+                        _kept.append(_hi)
+                for _cn in _floating_cn:
+                    if _cn in _expected:
+                        _kept.append({
+                            "body_part": "左手", "hand_side": "左手",
+                            "description": f"{_cn}浮空未按弦（该和弦通常用{_cn}按弦）",
+                            "severity": "mild",
+                            "timestamp": 0,
+                            "置信度": _vl.get("floating_conf", 0.0),
+                            "出现次数": 1,
+                        })
+                hand_issues = _kept
 
         # 匹配截图 URL（带去重：视觉相似的截图不重复出现）
         import os as _os
@@ -533,5 +637,22 @@ class HandCheckService:
             if quality_note:
                 quality_note += " "
             quality_note += f"{'、'.join(audio_only)}的音色异常但未检测到对应手指的手型问题，可能是收音或拨弦力度导致的，建议靠近麦克风确认。"
+
+        # 闷音弦提示：flatness>0.30 的弦 = 手指没按实（比「音色异常」更具体）
+        muted = []
+        for sr in string_results:
+            if sr.get("has_signal") and (sr.get("flatness", 0) or 0) > 0.30:
+                sn = sr.get("string_num", 0)
+                fn = None
+                for fname, fstring in finger_to_string.items():
+                    if fstring == sn:
+                        fn = fname
+                        break
+                name = sr.get("string_name", f"弦{sn}")
+                muted.append(f"{name}（{fn}可能没按实）" if fn else name)
+        if muted and audio_quality != "poor":
+            if quality_note:
+                quality_note += " "
+            quality_note += f"{'、'.join(muted)}检测到闷音，很可能是对应手指没按实。"
 
         return quality_note
