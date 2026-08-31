@@ -2,9 +2,15 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>控制台 — VirtuCoach</title>
-  <link rel="stylesheet" href="style.css?v=20">
+  <meta name="theme-color" content="#0a0a1a">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="stylesheet" href="style.css?v=24">
 </head>
 <body>
   <div class="app page-enter">
@@ -191,6 +197,28 @@
             html += '<tr id="reportRow' + s.id + '" style="display:none;"><td colspan="7"><div class="report-inline">' + reportBody + '</div><div style="margin-top:10px;"><button class="btn btn-secondary btn-sm" onclick="exportReportPDF(' + s.id + ')">导出 PDF</button></div></td></tr>';
           });
           html += '</tbody></table>';
+          if (window.matchMedia("(max-width: 640px)").matches) {
+            html = data.items.map(function (s) {
+              var modeLabel = { video_analysis: "视频分析", chord_check: "和弦检查", technique_check: "技巧检查" }[s.mode] || s.mode;
+              var score = s.overall_score || 0;
+              var scoreClass = score >= 80 ? "score-good" : score >= 60 ? "score-ok" : "score-bad";
+              var date = s.created_at ? s.created_at.replace("T", " ").substring(0, 16) : "";
+              var reportBody = s.report_text ? escHtml(s.report_text) : "该记录暂无详细报告内容";
+              return '<div class="session-card">' +
+                '<div class="sc-head">' +
+                '<label class="sc-cmp"><input type="checkbox" class="cmp-box" id="cmpbox' + s.id + '" onchange="toggleCmp(' + s.id + ', this.checked)" title="勾选用于对比">对比</label>' +
+                '<span class="sc-date">' + date + '</span>' +
+                '<span class="score-badge ' + scoreClass + '">' + score + '</span>' +
+                '</div>' +
+                '<div class="sc-meta">' + modeLabel + ' · ' + (s.instrument === "guitar" ? "吉他" : s.instrument) + ' · ' + escHtml(s.chord_or_track || "-") + '</div>' +
+                '<div class="sc-actions">' +
+                '<span class="report-expand" onclick="toggleReport(' + s.id + ', this)">进入</span>' +
+                '<button class="btn btn-danger btn-sm" onclick="deleteSession(' + s.id + ')">删除</button>' +
+                '</div>' +
+                '<div id="reportRow' + s.id + '" style="display:none;"><div class="report-inline">' + reportBody + '</div><div style="margin-top:10px;"><button class="btn btn-secondary btn-sm" onclick="exportReportPDF(' + s.id + ')">导出 PDF</button></div></div>' +
+                '</div>';
+            }).join("");
+          }
           document.getElementById("historyTable").innerHTML = html;
 
           // Pagination
@@ -207,9 +235,11 @@
 
       window.toggleReport = function (id, el) {
         var row = document.getElementById("reportRow" + id);
-        var expanded = row.style.display === "table-row";
-        row.style.display = expanded ? "none" : "table-row";
-        if (el) el.textContent = expanded ? "进入" : "收起";
+        if (!row) return;
+        var isTr = row.tagName === "TR";
+        var hidden = !row.style.display || row.style.display === "none";
+        row.style.display = hidden ? (isTr ? "table-row" : "block") : "none";
+        if (el) el.textContent = hidden ? "收起" : "进入";
       };
 
       window.exportReportPDF = function (id) {
@@ -328,6 +358,34 @@
         loadSessions();
       });
     })();
+  </script>
+  <!-- 移动端底部导航（PWA App Shell） -->
+  <nav class="bottom-nav" id="bottomNav" aria-label="主导航">
+    <button type="button" class="bn-item active" data-bn="dashboard" id="bnDashboard">
+      <span class="bn-icon">📊</span>
+      <span class="bn-label">控制台</span>
+    </button>
+    <a class="bn-item" href="/analysis.html">
+      <span class="bn-icon">🎥</span>
+      <span class="bn-label">开始练习</span>
+    </a>
+    <a class="bn-item" href="/analysis.html?mode=hand">
+      <span class="bn-icon">✋</span>
+      <span class="bn-label">手型检查</span>
+    </a>
+    <button type="button" class="bn-item" data-bn="install" id="bnInstall" style="display:none;">
+      <span class="bn-icon">📲</span>
+      <span class="bn-label">安装App</span>
+    </button>
+  </nav>
+  <script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js').catch(function (e) {
+        console.warn('Service Worker 注册失败:', e);
+      });
+    });
+  }
   </script>
 </body>
 </html>

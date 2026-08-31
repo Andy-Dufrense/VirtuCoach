@@ -28,6 +28,8 @@ start "VirtuCoachGraduate" /B "%PY%" run.py
 echo   [*] Waiting for backend to be ready...
 set RETRY=0
 :waitloop
+curl -s -k -o NUL https://localhost:1218/api/models/status 2>NUL
+if %errorlevel% equ 0 goto ready
 curl -s -o NUL http://localhost:1218/api/models/status 2>NUL
 if %errorlevel% equ 0 goto ready
 set /a RETRY+=1
@@ -43,7 +45,8 @@ goto waitloop
 echo.
 echo   ==========================================
 echo     [OK] Backend is ready!
-echo     Open: http://localhost:1218
+echo     Open: http://localhost:1218   (all devices)
+echo     Open: https://localhost:1443  (PWA install)
 echo   ==========================================
 echo.
 echo   Press any key to stop the server...

@@ -2,9 +2,15 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>管理面板 - VirtuCoach</title>
-<link rel="stylesheet" href="style.css?v=19">
+<meta name="theme-color" content="#0a0a1a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="stylesheet" href="style.css?v=24">
 <style>
 .admin-container { max-width: 1100px; margin: 0 auto; padding: 20px; }
 
@@ -120,6 +126,21 @@
 .tier-high { background: var(--success-light); color: var(--success); }
 .tier-mid { background: var(--warning-light); color: var(--warning); }
 .tier-low { background: var(--bg); color: var(--text-dim); }
+
+/* ── 移动端适配 ── */
+@media (max-width: 640px) {
+    .admin-container { padding: 12px 12px calc(24px + env(safe-area-inset-bottom)); }
+    .admin-tabs { flex-wrap: nowrap; overflow-x: auto; }
+    .admin-tab { flex: 1 0 auto; padding: 12px 14px; font-size: 13px; white-space: nowrap; }
+    .analytics-toolbar { flex-direction: column; align-items: stretch; }
+    .analytics-btns { justify-content: stretch; }
+    .analytics-btns .analytics-type-btn { flex: 1; }
+    .user-table th, .user-table td { font-size: 0.72rem; padding: 6px 4px; }
+    .filter-bar { flex-direction: column; }
+    .filter-bar select, .filter-bar input { width: 100%; min-height: 44px; font-size: 16px; }
+    .feedback-header, .eval-item-header { flex-direction: column; align-items: flex-start; gap: 6px; }
+    .feedback-detail img { max-width: 100%; }
+}
 </style>
 </head>
 <body>
@@ -1202,5 +1223,14 @@ var API_BASE = window.location.origin;
 function showToast(message, type) { toast(message, type === 'error' ? 'error' : 'success'); }
 </script>
 <script src="js/reference-manager.js?v=15"></script>
+<script>
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+        navigator.serviceWorker.register('sw.js').catch(function (e) {
+            console.warn('Service Worker 注册失败:', e);
+        });
+    });
+}
+</script>
 </body>
 </html>

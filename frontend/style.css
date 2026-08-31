@@ -269,13 +269,17 @@ p { color: var(--text-dim); }
    用 backwards 填充：动画结束后不留 transform，避免影响 fixed 元素定位。 */
 .page-enter { animation: slideUp 0.7s cubic-bezier(0.22, 1, 0.36, 1) backwards; }
 
-/* 尊重系统“减少动态效果”设置（无障碍 / 企业级细节） */
+/* 尊重“减少动态效果”偏好但不禁用动画：缩短时长、去掉错峰延迟，
+   保证任何系统设置下所有用户都能感知到页面入场动态。 */
 @media (prefers-reduced-motion: reduce) {
     .page-enter, .hero-badge, .hero-title, .hero-sub, .hero-ctas, .hero-note,
     .page-hero .eyebrow, .page-hero h1, .page-hero .lead,
-    .reveal, .result-section, .upload-mode-panel, .tab-content {
-        animation: none !important;
-        transition: none !important;
+    .result-section, .upload-mode-panel, .tab-content {
+        animation-duration: 0.4s !important;
+        animation-delay: 0s !important;
+    }
+    .reveal {
+        transition-duration: 0.4s !important;
     }
 }
 
@@ -615,9 +619,6 @@ p { color: var(--text-dim); }
 .reveal-d1 { transition-delay: 0.08s; }
 .reveal-d2 { transition-delay: 0.16s; }
 .reveal-d3 { transition-delay: 0.24s; }
-@media (prefers-reduced-motion: reduce) {
-    .reveal { opacity: 1; transform: none; transition: none; }
-}
 .upload-box {
     background: var(--card-bg); border: 2px dashed var(--card-border-light);
     border-radius: var(--radius-lg); padding: 44px 24px; text-align: center;
@@ -1488,4 +1489,211 @@ li { padding: 6px 0; font-size: 14px; }
 @media print {
     .site-nav, .site-footer, .feedback-fab, .chat-sidebar-toggle { display: none !important; }
     body { background: #fff; color: #111; }
+}
+
+/* ═══════════════════════════════════════
+   PWA / 移动端增强（2026-08-31）
+   ═══════════════════════════════════════ */
+
+/* 底部导航：桌面端隐藏，仅移动端显示 */
+.bottom-nav {
+    display: none;
+}
+
+@media (max-width: 640px) {
+    html { -webkit-text-size-adjust: 100%; }
+
+    body {
+        overscroll-behavior-y: none;
+    }
+
+    .app {
+        padding: 12px 14px calc(92px + env(safe-area-inset-bottom));
+    }
+
+    /* ---- 顶部导航紧凑化 ---- */
+    .nav-bar {
+        padding: 10px 2px;
+        margin-bottom: 14px;
+    }
+    .nav-bar .nav-links { display: none; }
+    .nav-bar .nav-logo { font-size: 18px; }
+    .nav-bar .nav-user { font-size: 12px; margin-left: auto; }
+    .nav-bar .btn-small { padding: 5px 10px; font-size: 12px; margin: 0; }
+
+    /* ---- 底部导航 ---- */
+    .bottom-nav {
+        display: flex;
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 950;
+        background: rgba(15, 15, 32, 0.94);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        border-top: 1px solid var(--card-border);
+        padding-bottom: env(safe-area-inset-bottom);
+    }
+    .bn-item {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        padding: 9px 2px 7px;
+        background: none;
+        border: none;
+        color: var(--text-dim);
+        font-family: inherit;
+        font-size: 11px;
+        font-weight: 600;
+        line-height: 1.2;
+        text-decoration: none;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        transition: color 0.15s;
+    }
+    .bn-item.active { color: var(--primary-light); }
+    .bn-item:active { opacity: 0.7; }
+    .bn-icon { font-size: 20px; line-height: 1; }
+
+    /* ---- 分析页：上传区 ---- */
+    .upload-box { padding: 30px 16px; }
+    .upload-icon svg { width: 44px; height: 44px; }
+    .upload-box h2 { font-size: 18px; }
+    .upload-hint { font-size: 13px; }
+    .upload-subhint { font-size: 11px; }
+    .video-action-row { flex-direction: column; gap: 8px; }
+    .video-action-row .btn,
+    .chord-upload-area .btn { width: 100%; margin: 2px 0; }
+    .upload-options { flex-direction: column; align-items: stretch; gap: 12px; margin-top: 18px; }
+    .option-group { width: 100%; }
+    .option-group select {
+        width: 100%;
+        min-height: 46px;
+        font-size: 16px;
+        padding: 10px 12px;
+    }
+    .hand-submode { gap: 6px; }
+    .submode-btn { flex: 1; padding: 10px 8px; font-size: 13px; }
+
+    /* ---- 按钮：触控目标 ≥ 44px ---- */
+    .btn { min-height: 46px; }
+    .btn-record { min-height: 46px; }
+    .actions { flex-direction: column; gap: 8px; }
+    .actions .btn { width: 100%; margin: 2px 0; }
+    .tabs { gap: 6px; overflow-x: auto; }
+    .tab { flex: 1 0 auto; padding: 9px 12px; font-size: 13px; white-space: nowrap; }
+
+    /* ---- 进度 / 结果 ---- */
+    .progress-card { padding: 18px 14px; }
+    .progress-steps { gap: 8px; }
+    .step { padding: 10px 4px; font-size: 12px; }
+    .score-card { padding: 12px 6px; }
+    .score-number { font-size: 36px; }
+    .score-number.small { font-size: 24px; }
+    .score-label { font-size: 11px; }
+    .report-card, .error-list-card { padding: 16px 14px; margin-bottom: 14px; }
+    .summary-card { padding: 14px; }
+
+    /* ---- 视频预览/回放 ---- */
+    #videoRecordResult, #chordVideoResult {
+        max-width: 100% !important;
+        max-height: none !important;
+        height: auto;
+        width: 100%;
+    }
+    #replayVideo { max-height: 300px !important; }
+
+    /* ---- 控制台 ---- */
+    .stats-grid-dash { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .stat-card-dash { padding: 14px 8px; }
+    .hero-action-card { padding: 16px 14px; }
+    .chart-bar-wrap { overflow-x: auto; }
+
+    /* ---- 登录/注册 ---- */
+    .auth-form-side {
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 28px 16px calc(32px + env(safe-area-inset-bottom));
+    }
+    .auth-card { width: 100%; max-width: 420px; }
+    .auth-card .form-group input {
+        min-height: 46px;
+        font-size: 16px;
+    }
+
+    /* ---- 弹层：底部抽屉 ---- */
+    .feedback-modal-overlay {
+        padding: 0;
+        align-items: flex-end;
+    }
+    .feedback-modal {
+        max-width: 100%;
+        max-height: 92vh;
+        border-radius: 18px 18px 0 0;
+        padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
+        animation: vc-modal-up 0.22s ease-out;
+    }
+    .fb-row { flex-direction: column; gap: 10px; }
+
+    /* ---- 悬浮按钮 / Toast：避开底部导航 ---- */
+    .feedback-fab {
+        right: 14px;
+        bottom: calc(80px + env(safe-area-inset-bottom));
+        width: 48px;
+        height: 48px;
+        font-size: 20px;
+    }
+    .toast {
+        bottom: calc(92px + env(safe-area-inset-bottom));
+        width: max-content;
+        max-width: 92vw;
+        text-align: center;
+        white-space: normal;
+    }
+
+    /* ---- 历史记录：卡片化，避免表格把页面撑宽 ---- */
+    body { overflow-x: hidden; }
+    .session-card {
+        background: var(--card-bg);
+        border: 1px solid var(--card-border);
+        border-radius: 14px;
+        padding: 12px 12px 10px;
+        margin-bottom: 10px;
+    }
+    .sc-head { display: flex; align-items: center; gap: 8px; }
+    .sc-cmp {
+        display: inline-flex; align-items: center; gap: 4px;
+        font-size: 12px; color: var(--text-dim);
+    }
+    .sc-cmp input { width: 16px; height: 16px; accent-color: var(--primary); }
+    .sc-date {
+        flex: 1; min-width: 0; font-size: 13px; color: var(--text);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .sc-meta {
+        margin-top: 8px; font-size: 13px; color: var(--text-dim);
+        overflow-wrap: anywhere;
+    }
+    .sc-actions { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+
+    /* ---- 其他容器防横向溢出 ---- */
+    .cmp-bar { flex-wrap: wrap; row-gap: 8px; }
+    .panel-head { flex-wrap: wrap; gap: 8px; }
+    .cmp-modal { padding: 14px 12px; }
+    .cmp-table th, .cmp-table td {
+        padding: 8px 6px; font-size: 13px; overflow-wrap: anywhere;
+    }
+}
+
+@keyframes vc-modal-up {
+    from { transform: translateY(40px); opacity: 0.4; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+@media (min-width: 641px) {
+    #bnInstall { display: none !important; }
 }

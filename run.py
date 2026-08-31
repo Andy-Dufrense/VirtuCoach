@@ -28,7 +28,14 @@ else:
 
 if __name__ == "__main__":
     import uvicorn
-    from backend.config import HOST, PORT, validate
+    from backend.config import (
+        HOST,
+        PORT,
+        HTTPS_PORT,
+        SSL_CERT_FILE,
+        SSL_KEY_FILE,
+        validate,
+    )
     from backend.logging_config import setup_logging, get_logger
 
     setup_logging()
@@ -41,6 +48,31 @@ if __name__ == "__main__":
     from backend.main import app
 
     logger.info("VirtuCoach - AI Music Coach")
-    logger.info(f"http://localhost:{PORT}")
+    if all(os.path.isfile(p) for p in (SSL_CERT_FILE, SSL_KEY_FILE)):
+        # 双监听：HTTP 留在 1218（兼容旧书签/快捷方式/旧 SW），HTTPS 走 1443（PWA 安装入口）。
+        # 教训：不要把老源的 HTTP 直接停掉，否则老源残留的 Service Worker 会把一切导航兜回缓存首页。
+        import threading
+        from uvicorn import Config, Server
 
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
+        logger.info(
+            f"HTTP  http://localhost:{PORT}  (兼容旧链接/快捷方式)"
+        )
+        logger.info(
+            f"HTTPS https://localhost:{HTTPS_PORT}  (PWA 安装入口，手机需先信任 CA)"
+        )
+        http_server = Server(Config(app, host=HOST, port=PORT, log_level="info"))
+        https_server = Server(
+            Config(
+                app,
+                host=HOST,
+                port=HTTPS_PORT,
+                log_level="info",
+                ssl_certfile=SSL_CERT_FILE,
+                ssl_keyfile=SSL_KEY_FILE,
+            )
+        )
+        threading.Thread(target=http_server.run, daemon=True).start()
+        https_server.run()
+    else:
+        logger.info(f"http://localhost:{PORT}  (未找到证书，纯 HTTP 开发模式)")
+        uvicorn.run(app, host=HOST, port=PORT, log_level="info")

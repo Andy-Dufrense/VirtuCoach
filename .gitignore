@@ -56,3 +56,6 @@ backend/clean_test_result.json
 
 # --- 用户问题截图，永不提交 ---
 problem_snapshot/
+
+# --- 本地 HTTPS 证书（含私钥，永不提交） ---
+certs/

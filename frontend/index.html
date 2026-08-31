@@ -2,10 +2,16 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>VirtuCoach — AI 吉他陪练系统</title>
   <meta name="description" content="上传演奏视频，AI 分析音准、节奏与手型，生成专业练习报告。你的 24 小时私人吉他教练。">
-  <link rel="stylesheet" href="style.css?v=19">
+  <meta name="theme-color" content="#0a0a1a">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="stylesheet" href="style.css?v=24">
 </head>
 <body>
 
@@ -210,6 +216,15 @@
       }, { threshold: 0.12, rootMargin: "0px 0px -40px 0px" });
       targets.forEach(function (el) { io.observe(el); });
     })();
+  </script>
+  <script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js').catch(function (e) {
+        console.warn('Service Worker 注册失败:', e);
+      });
+    });
+  }
   </script>
 </body>
 </html>

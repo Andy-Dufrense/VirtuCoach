@@ -152,6 +152,7 @@ let videoRecordState = {
 // ========== 初始化 ==========
 document.addEventListener("DOMContentLoaded", () => {
     setupEventListeners();
+    initPwa();
     // 支持 dashboard 跳转带 ?mode=hand 直接进入手型/技巧检查
     try {
         const params = new URLSearchParams(window.location.search);
@@ -1249,6 +1250,7 @@ function formatInline(text) {
 
 function switchMode(mode) {
     currentMode = mode;
+    syncBottomNav(mode);
     document.querySelectorAll(".mode-btn").forEach(b => b.classList.remove("active"));
     document.getElementById(mode === "video" ? "modeVideoBtn" : "modeImageBtn").classList.add("active");
 
@@ -1446,3 +1448,85 @@ function showToast(message, type = "") {
         }
     });
 })();
+
+// ═══════════════════════════════════════════
+// PWA：底部导航 + Service Worker + 安装提示（2026-08-31）
+// ═══════════════════════════════════════════
+let _deferredInstallPrompt = null;
+
+function _isPwaStandalone() {
+    return (
+        window.matchMedia("(display-mode: standalone)").matches ||
+        window.navigator.standalone === true
+    );
+}
+
+function setupBottomNav() {
+    var nav = document.getElementById("bottomNav");
+    if (!nav) return;
+
+    nav.addEventListener("click", function(e) {
+        var item = e.target && e.target.closest ? e.target.closest(".bn-item") : null;
+        if (!item) return;
+        var mode = item.getAttribute("data-bn");
+        if (mode === "video" || mode === "image") {
+            switchMode(mode);
+        } else if (mode === "install") {
+            triggerInstallPrompt();
+        }
+        // 无 data-bn 的链接项（如“控制台”）由浏览器默认跳转
+    });
+}
+
+function syncBottomNav(mode) {
+    document.querySelectorAll(".bn-item[data-bn]").forEach(function(item) {
+        var active = item.getAttribute("data-bn") === mode;
+        item.classList.toggle("active", active);
+    });
+}
+
+function showInstallButton() {
+    var btn = document.getElementById("bnInstall");
+    if (btn && !_isPwaStandalone()) btn.style.display = "";
+}
+
+function triggerInstallPrompt() {
+    if (_deferredInstallPrompt) {
+        _deferredInstallPrompt.prompt();
+        _deferredInstallPrompt.userChoice.then(function(choice) {
+            _deferredInstallPrompt = null;
+            var btn = document.getElementById("bnInstall");
+            if (btn) btn.style.display = "none";
+            if (choice.outcome !== "accepted") {
+                showToast("已取消安装", "");
+            }
+        });
+    } else if (/iphone|ipad|ipod/i.test(navigator.userAgent) && !_isPwaStandalone()) {
+        showToast("iOS 安装：点浏览器「分享」→「添加到主屏幕」", "");
+    } else {
+        showToast("请在浏览器菜单中选择「安装 / 添加到主屏幕」", "");
+    }
+}
+
+function registerServiceWorker() {
+    if (!("serviceWorker" in navigator)) return;
+    navigator.serviceWorker.register("sw.js").catch(function(err) {
+        console.warn("Service Worker 注册失败:", err);
+    });
+}
+
+function initPwa() {
+    setupBottomNav();
+    window.addEventListener("load", registerServiceWorker);
+    window.addEventListener("beforeinstallprompt", function(e) {
+        e.preventDefault();
+        _deferredInstallPrompt = e;
+        showInstallButton();
+    });
+    window.addEventListener("appinstalled", function() {
+        _deferredInstallPrompt = null;
+        var btn = document.getElementById("bnInstall");
+        if (btn) btn.style.display = "none";
+        showToast("VirtuCoach 已安装到主屏幕 🎉", "success");
+    });
+}

@@ -2,9 +2,18 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>VirtuCoach - 练习分析</title>
-    <link rel="stylesheet" href="style.css?v=21">
+    <meta name="description" content="AI 乐器陪练：上传演奏视频，自动分析和弦、节奏与手型">
+    <meta name="theme-color" content="#0a0a1a">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" type="image/png" href="icons/icon-192.png">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="VirtuCoach">
+    <link rel="stylesheet" href="style.css?v=24">
 </head>
 <body>
     <div class="app page-enter">
@@ -471,9 +480,29 @@
         <div class="toast" id="toast"></div>
     </div>
 
+    <!-- 移动端底部导航（PWA App Shell） -->
+    <nav class="bottom-nav" id="bottomNav" aria-label="主导航">
+        <a class="bn-item" href="/dashboard.html">
+            <span class="bn-icon">📊</span>
+            <span class="bn-label">控制台</span>
+        </a>
+        <button type="button" class="bn-item active" data-bn="video" id="bnVideo">
+            <span class="bn-icon">🎥</span>
+            <span class="bn-label">视频分析</span>
+        </button>
+        <button type="button" class="bn-item" data-bn="image" id="bnImage">
+            <span class="bn-icon">✋</span>
+            <span class="bn-label">手型检查</span>
+        </button>
+        <button type="button" class="bn-item" data-bn="install" id="bnInstall" style="display:none;">
+            <span class="bn-icon">📲</span>
+            <span class="bn-label">安装App</span>
+        </button>
+    </nav>
+
     <script src="js/auth.js"></script>
-    <script src="js/hand-check.js?v=16"></script>
-    <script src="app.js?v=18"></script>
+    <script src="js/hand-check.js?v=17"></script>
+    <script src="app.js?v=19"></script>
     <script>
     (function () {
       if (VirtuCoach.isLoggedIn()) {

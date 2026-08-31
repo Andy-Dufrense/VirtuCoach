@@ -25,6 +25,19 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = os.environ.get("VIRTUCOACH_UPLOAD_DIR", str(PROJECT_ROOT / "uploads"))
 MODEL_DIR = os.environ.get("VIRTUCOACH_MODEL_DIR", str(PROJECT_ROOT / "models"))
 
+# ---- HTTPS (P0-4：局域网手机安装 PWA 需要安全上下文) ----
+# 证书由 scripts/gen_https_certs.py 生成；存在则 HTTPS 启动，不存在则回退纯 HTTP。
+SSL_CERT_FILE = os.environ.get(
+    "VIRTUCOACH_SSL_CERT", str(PROJECT_ROOT / "certs" / "virtucoach-server.crt")
+)
+SSL_KEY_FILE = os.environ.get(
+    "VIRTUCOACH_SSL_KEY", str(PROJECT_ROOT / "certs" / "virtucoach-server.key")
+)
+HTTPS_PORT = int(os.environ.get("VIRTUCOACH_HTTPS_PORT", "1443"))
+CA_CERT_FILE = os.environ.get(
+    "VIRTUCOACH_CA_CERT", str(PROJECT_ROOT / "certs" / "virtucoach-ca.crt")
+)
+
 
 def _resolve_ffmpeg_path() -> str:
     """定位 ffmpeg 可执行文件：环境变量 → PATH → imageio_ffmpeg 自带二进制。

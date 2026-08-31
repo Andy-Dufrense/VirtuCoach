@@ -32,9 +32,18 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, File, Form, UploadFile, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 
-from config import UPLOAD_DIR, HOST, PORT, CORS_ORIGINS, ADMIN_PASSWORD, validate
+from config import (
+    UPLOAD_DIR,
+    HOST,
+    PORT,
+    CORS_ORIGINS,
+    ADMIN_PASSWORD,
+    CA_CERT_FILE,
+    validate,
+)
 from logging_config import setup_logging, get_logger
 
 # ---- logging ----
@@ -116,6 +125,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -248,6 +258,30 @@ def serve_login():
 @app.get("/register.html")
 def serve_register():
     return page_response(FRONTEND_DIR / "register.html")
+
+
+@app.get("/manifest.webmanifest")
+def serve_manifest():
+    manifest_path = FRONTEND_DIR / "manifest.webmanifest"
+    if manifest_path.exists():
+        return FileResponse(
+            str(manifest_path),
+            media_type="application/manifest+json",
+            headers=NO_CACHE_HEADERS,
+        )
+    raise HTTPException(status_code=404, detail="Manifest not found")
+
+
+@app.get("/ca.crt")
+def serve_ca_cert():
+    """供手机下载并信任本地 CA（P0-4 HTTPS）。"""
+    if os.path.isfile(CA_CERT_FILE):
+        return FileResponse(
+            CA_CERT_FILE,
+            media_type="application/x-x509-ca-cert",
+            headers=NO_CACHE_HEADERS,
+        )
+    raise HTTPException(status_code=404, detail="CA cert not found")
 
 
 # ═══════════════════════════════════════════
@@ -543,7 +577,7 @@ def admin_reset_user_password(
 async def serve_static(filename: str):
     """Serve frontend static files (CSS, JS, etc)."""
     # Only serve known static extensions; everything else is an API 404
-    if not any(filename.endswith(ext) for ext in (".css", ".js", ".html", ".svg", ".png", ".jpg", ".ico", ".json", ".woff2")):
+    if not any(filename.endswith(ext) for ext in (".css", ".js", ".html", ".svg", ".png", ".jpg", ".ico", ".json", ".webmanifest", ".woff2")):
         raise HTTPException(status_code=404, detail="Not found")
     file_path = os.path.join(str(FRONTEND_DIR), filename)
     # Prevent directory traversal
